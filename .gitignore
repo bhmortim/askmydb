@@ -1,5 +1,5 @@
 node_modules/
 config.json
-demo/demo.sqlite
+demo/*.sqlite
 *.log
 .DS_Store

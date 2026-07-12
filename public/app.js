@@ -9,6 +9,10 @@ const $ = (sel) => document.querySelector(sel);
 const state = {
   config: null,
   schema: null,
+  connections: [],
+  activeConnectionId: null,
+  editingConnId: null,      // null = adding a new connection
+  lastModels: { chat: [], embedding: [] },
   history: [],   // [{question, sql}] for follow-up context
   busy: false
 };
@@ -59,6 +63,15 @@ async function api(path, body) {
   return res.json();
 }
 
+async function sendJson(method, path, body) {
+  const res = await fetch(`/api${path}`, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  return res.json();
+}
+
 /** POST that reads a server-sent-event stream; calls onEvent per event. */
 async function sseStream(path, body, onEvent) {
   const res = await fetch(`/api${path}`, {
@@ -95,30 +108,67 @@ $('#themeBtn').addEventListener('click', () => {
   applyTheme(document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark');
 });
 
-/* ---------------- connection status ---------------- */
+/* ---------------- connections ---------------- */
 
-function renderConnStatus() {
-  const db = state.config?.db || {};
-  const ready = Boolean(db.type && (db.type === 'sqlite' ? db.file : db.database));
-  const dot = $('#connDot');
-  if (!ready) {
-    dot.className = 'dot';
-    $('#connTitle').textContent = 'Not connected';
-    $('#connSub').textContent = 'Set up a database to begin';
-    $('#connectBtn').textContent = 'Connect a database';
-  } else {
-    dot.className = state.schema ? 'dot on' : 'dot';
-    const label = db.type === 'sqlite' ? (db.file || '').split(/[\\/]/).pop() : db.database;
-    $('#connTitle').textContent = label;
-    $('#connSub').textContent = state.schema
-      ? `${state.schema.tables.length} tables · ${db.type}`
-      : `${db.type} — connecting…`;
-    $('#connectBtn').textContent = 'Edit connection';
+function activeConn() {
+  return state.connections.find((c) => c.id === state.activeConnectionId) || state.connections[0] || null;
+}
+
+function renderConnections() {
+  const listEl = $('#connList');
+  listEl.textContent = '';
+  const hasAny = state.connections.length > 0;
+  $('#connectBtn').hidden = hasAny;
+  $('#correlateBtn').hidden = state.connections.length < 1;
+
+  for (const c of state.connections) {
+    const active = c.id === state.activeConnectionId;
+    const dot = el('span', { class: 'dot' + (active && state.schema ? ' on' : '') });
+    const item = el('div', { class: 'conn-item' + (active ? ' active' : '') },
+      dot,
+      el('div', { class: 'conn-labels' },
+        el('div', { class: 'conn-name', title: c.label }, c.label || c.database || c.file || c.type),
+        el('div', { class: 'conn-type' }, c.type)),
+      el('button', {
+        class: 'icon-btn icon-btn-sm conn-edit', type: 'button', title: 'Edit',
+        onclick: (e) => { e.stopPropagation(); openConnectionEditor(c.id); }
+      }, svgEl('svg', { viewBox: '0 0 24 24' }, svgEl('path', { d: 'M4 20h4L18 10l-4-4L4 16v4zM14 6l4 4', fill: 'none', stroke: 'currentColor', 'stroke-width': '2', 'stroke-linejoin': 'round' })))
+    );
+    item.addEventListener('click', () => switchConnection(c.id));
+    listEl.append(item);
   }
+  updateComposerEnabled();
+}
+
+async function switchConnection(id) {
+  if (id === state.activeConnectionId && state.schema) return;
+  state.activeConnectionId = id;
+  await api(`/connections/${id}/activate`, {});
+  state.schema = null;
+  renderConnections();
+  const conn = activeConn();
+  const schemaRes = await api(`/schema?connectionId=${id}`);
+  if (schemaRes.ok) {
+    state.schema = schemaRes.schema;
+  } else {
+    const refreshed = await api('/schema/refresh', { connectionId: id });
+    if (refreshed.ok) state.schema = refreshed.schema;
+  }
+  renderSchemaTree();
+  renderConnections();
+  loadSuggestions();
+}
+
+function updateComposerEnabled() {
+  const conn = activeConn();
+  const ready = Boolean(conn && conn.type && (conn.type === 'sqlite' ? conn.file : conn.database));
   const canAsk = ready && Boolean(state.config?.llm?.model);
   $('#questionInput').disabled = !canAsk;
   $('#sendBtn').disabled = !canAsk || state.busy;
 }
+
+// kept as an alias so existing call sites still work
+function renderConnStatus() { renderConnections(); }
 
 /* ---------------- schema sidebar ---------------- */
 
@@ -157,22 +207,20 @@ $('#schemaFilter').addEventListener('input', (e) => {
 });
 
 $('#refreshSchemaBtn').addEventListener('click', async () => {
-  $('#connSub').textContent = 'Discovering schema…';
-  const res = await api('/schema/refresh', {});
+  const res = await api('/schema/refresh', { connectionId: state.activeConnectionId });
   if (res.ok) {
     state.schema = res.schema;
     renderSchemaTree();
     loadSuggestions();
-  } else {
-    $('#connSub').textContent = res.error || 'Schema discovery failed';
   }
-  renderConnStatus();
+  renderConnections();
 });
 
 /* ---------------- suggestions ---------------- */
 
 function renderSuggestions(list) {
   const box = $('#suggestions');
+  if (!box) return; // welcome screen already dismissed
   box.textContent = '';
   for (const q of list) {
     box.append(el('button', { class: 'chip', type: 'button', onclick: () => { $('#questionInput').value = q; askCurrent(); } }, q));
@@ -184,7 +232,7 @@ async function loadSuggestions() {
   const fallback = defaultSuggestions();
   renderSuggestions(fallback);
   try {
-    const res = await api('/suggest', {});
+    const res = await api('/suggest', { connectionId: state.activeConnectionId });
     if (res.ok && res.suggestions?.length) renderSuggestions(res.suggestions);
   } catch { /* keep fallback */ }
 }
@@ -559,6 +607,10 @@ function renderResult(cardCtl, data, question) {
     const explainBtn = el('button', { class: 'btn btn-sm', type: 'button' }, 'Explain this result');
     explainBtn.addEventListener('click', () => explainResult(cardCtl, explainBtn, { question, sql, columns, rows }));
     actions.append(explainBtn);
+
+    const analyzeBtn = el('button', { class: 'btn btn-sm', type: 'button' }, '📊 Analyze');
+    analyzeBtn.addEventListener('click', () => analyzeResult(cardCtl, analyzeBtn, { question, columns, rows, resultId: data.resultId }));
+    actions.append(analyzeBtn);
   }
   body.append(actions);
   scrollChat();
@@ -577,7 +629,7 @@ function openSqlEditor(cardCtl, sql, question) {
   runBtn.addEventListener('click', async () => {
     runBtn.disabled = true;
     runBtn.textContent = 'Running…';
-    const res = await api('/run', { sql: editor.value });
+    const res = await api('/run', { sql: editor.value, connectionId: state.activeConnectionId });
     box.remove();
     if (res.ok) {
       cardCtl.body.textContent = '';
@@ -609,6 +661,256 @@ async function explainResult(cardCtl, btn, payload) {
   btn.disabled = false;
 }
 
+/* ---------------- statistical analysis ---------------- */
+
+// resultRef is preferred (server holds the data); fall back to inline columns/rows.
+function analysisPayload(payload, extra) {
+  return payload.resultId
+    ? { resultRef: payload.resultId, question: payload.question, ...extra }
+    : { columns: payload.columns, rows: payload.rows, question: payload.question, ...extra };
+}
+
+async function analyzeResult(cardCtl, btn, payload) {
+  btn.disabled = true;
+  const panel = el('div', { class: 'stat-card' });
+  const head = el('div', { class: 'stat-card-head' }, 'Suggested analyses');
+  const chips = el('div', { class: 'analysis-suggestions' });
+  const slot = el('div', {});
+  panel.append(head, chips, slot);
+  cardCtl.body.append(panel);
+  scrollChat();
+
+  try {
+    const res = await api('/recommend', analysisPayload(payload));
+    if (!res.ok || !res.recommendations?.length) {
+      head.textContent = res.ok ? 'No analyses fit this result — try a query with numeric columns.' : (res.error || 'Analysis unavailable');
+      btn.disabled = false;
+      return;
+    }
+    for (const rec of res.recommendations) {
+      const chip = el('button', { class: 'analysis-chip', type: 'button', title: rec.rationale },
+        el('span', {}, rec.title),
+        el('span', { class: 'why', title: rec.rationale }, 'ⓘ'));
+      chip.addEventListener('click', () => runAnalysisChip(slot, payload, rec));
+      chips.append(chip);
+    }
+    // auto-run the top recommendation
+    runAnalysisChip(slot, payload, res.recommendations[0]);
+  } catch (e) {
+    head.textContent = `Analysis failed: ${e.message}`;
+  }
+  btn.disabled = false;
+}
+
+async function runAnalysisChip(slot, payload, rec) {
+  slot.textContent = '';
+  const loading = el('div', { class: 'status-line' }, el('span', { class: 'spinner' }), el('span', {}, `Computing: ${rec.title}…`));
+  slot.append(loading);
+  try {
+    const res = await api('/analyze', analysisPayload(payload, { kind: rec.kind, columns: rec.columns }));
+    slot.textContent = '';
+    if (!res.ok) { slot.append(el('div', { class: 'error-box' }, res.error || 'Analysis failed')); return; }
+    renderStatCard(slot, res, payload, rec);
+  } catch (e) {
+    slot.textContent = '';
+    slot.append(el('div', { class: 'error-box' }, e.message));
+  }
+}
+
+function renderStatCard(slot, res, payload, rec) {
+  const card = res.card;
+  const wrap = el('div', {});
+  // headline tiles
+  const tiles = el('div', { class: 'stat-tiles' });
+  for (const h of card.headline) {
+    tiles.append(el('div', { class: 'stat-tile' },
+      el('div', { class: 'st-label' }, h.label),
+      el('div', { class: 'st-value' }, h.value)));
+  }
+  wrap.append(el('div', { class: 'stat-card-head' }, card.title), tiles);
+
+  if (card.detail && card.detail.length) {
+    const detail = el('div', { class: 'stat-detail' });
+    for (const d of card.detail) detail.append(el('span', {}, el('span', { class: 'sd-label' }, d.label + ': '), d.value));
+    wrap.append(detail);
+  }
+
+  // chart for the analysis, if applicable
+  const chart = renderAnalysisChart(card.chart, res, payload, rec);
+  if (chart) wrap.append(chart);
+
+  // caveats
+  if (res.caveats && res.caveats.length) {
+    const box = el('div', { class: 'caveats' });
+    for (const c of res.caveats) {
+      const icon = c.level === 'strong' ? '⚠' : c.level === 'warn' ? '!' : 'ⓘ';
+      box.append(el('div', { class: `caveat ${c.level}` }, el('span', { class: 'caveat-icon' }, icon), el('span', {}, c.message)));
+    }
+    wrap.append(box);
+  }
+
+  // plain-English interpretation, streamed from the model
+  const interp = el('div', { class: 'explain-box' });
+  interp.textContent = 'Interpreting…';
+  wrap.append(interp);
+  streamInterpretation(interp, res, payload.question);
+
+  slot.append(wrap);
+  scrollChat();
+}
+
+async function streamInterpretation(box, res, question) {
+  try {
+    let acc = '';
+    let first = true;
+    await sseStream('/interpret', { kind: res.kind, result: res.result, caveats: (res.caveats || []).map((c) => c.message), question }, (ev) => {
+      if (ev.type === 'token') { if (first) { box.textContent = ''; first = false; } acc += ev.text; box.textContent = acc; scrollChat(); }
+      else if (ev.type === 'error') box.textContent = `(interpretation unavailable: ${ev.message})`;
+    });
+    if (!acc) box.remove();
+  } catch {
+    box.remove();
+  }
+}
+
+/* ---------------- analysis charts ---------------- */
+
+function renderAnalysisChart(type, res, payload, rec) {
+  const cols = rec.columns || {};
+  try {
+    if (type === 'scatter' && cols.x && cols.y) return scatterChart(payload, cols.x, cols.y, res.result);
+    if (type === 'histogram' && (cols.values || cols.x)) return histogramChart(payload, cols.values || cols.x);
+    if (type === 'groupCompare' && cols.value && cols.group) return groupCompareChart(payload, cols.value, cols.group);
+    if (type === 'heatmap' && res.result.matrix) return heatmapChart(res.result);
+  } catch { /* charts are best-effort */ }
+  return null;
+}
+
+function colFromPayload(payload, name) {
+  const idx = payload.columns.indexOf(name);
+  return payload.rows.map((r) => r[idx]);
+}
+
+function scatterChart(payload, xName, yName, result) {
+  const xs = colFromPayload(payload, xName).map(Number);
+  const ys = colFromPayload(payload, yName).map(Number);
+  const pts = xs.map((x, i) => [x, ys[i]]).filter((p) => Number.isFinite(p[0]) && Number.isFinite(p[1]));
+  if (pts.length < 2) return null;
+  const W = 760, H = 320, padL = 56, padR = 16, padT = 14, padB = 40;
+  const xsV = pts.map((p) => p[0]);
+  const ysV = pts.map((p) => p[1]);
+  const xMin = Math.min(...xsV), xMax = Math.max(...xsV);
+  const yMin = Math.min(...ysV), yMax = Math.max(...ysV);
+  const sx = (v) => padL + ((v - xMin) / (xMax - xMin || 1)) * (W - padL - padR);
+  const sy = (v) => H - padB - ((v - yMin) / (yMax - yMin || 1)) * (H - padT - padB);
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img' });
+  for (const t of niceTicks(yMax - yMin || 1, 4).map((v) => v + yMin)) {
+    svg.append(svgEl('line', { x1: padL, y1: sy(t), x2: W - padR, y2: sy(t), stroke: 'var(--grid)', 'stroke-width': 1 }));
+    svg.append(svgEl('text', { x: padL - 8, y: sy(t) + 4, 'text-anchor': 'end', fill: 'var(--ink-3)', 'font-size': 11 }, fmtAxis(t)));
+  }
+  // regression line if present
+  if (result && Number.isFinite(result.slope)) {
+    const x1 = xMin, x2 = xMax;
+    svg.append(svgEl('line', { x1: sx(x1), y1: sy(result.intercept + result.slope * x1), x2: sx(x2), y2: sy(result.intercept + result.slope * x2), stroke: 'var(--series-3)', 'stroke-width': 2 }));
+  }
+  for (const p of pts) {
+    const dot = svgEl('circle', { cx: sx(p[0]), cy: sy(p[1]), r: 3.5, fill: 'var(--series-1)', 'fill-opacity': 0.7 });
+    dot.addEventListener('mousemove', (e) => showTooltip(e, `${xName}, ${yName}`, `${fmtNum(p[0])}, ${fmtNum(p[1])}`));
+    dot.addEventListener('mouseleave', hideTooltip);
+    svg.append(dot);
+  }
+  svg.append(svgEl('text', { x: (W) / 2, y: H - 6, 'text-anchor': 'middle', fill: 'var(--ink-3)', 'font-size': 11 }, xName));
+  return el('div', { class: 'chart-wrap' }, svg);
+}
+
+function histogramChart(payload, valName) {
+  const vals = colFromPayload(payload, valName).map(Number).filter(Number.isFinite);
+  if (vals.length < 2) return null;
+  const lo = Math.min(...vals), hi = Math.max(...vals);
+  const k = Math.max(1, Math.ceil(Math.log2(vals.length) + 1));
+  const width = (hi - lo) / k || 1;
+  const bins = new Array(k).fill(0);
+  for (const v of vals) { let i = Math.floor((v - lo) / width); if (i >= k) i = k - 1; bins[i]++; }
+  const W = 760, H = 260, padL = 40, padR = 16, padT = 14, padB = 34;
+  const maxC = Math.max(...bins);
+  const bw = (W - padL - padR) / k;
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img' });
+  bins.forEach((c, i) => {
+    const h = (c / maxC) * (H - padT - padB);
+    const x = padL + i * bw;
+    const bar = svgEl('rect', { x: x + 1, y: H - padB - h, width: Math.max(1, bw - 2), height: h, rx: 3, fill: 'var(--series-1)' });
+    bar.addEventListener('mousemove', (e) => showTooltip(e, `${fmtNum(lo + i * width)}–${fmtNum(lo + (i + 1) * width)}`, `${c}`));
+    bar.addEventListener('mouseleave', hideTooltip);
+    svg.append(bar);
+  });
+  svg.append(svgEl('line', { x1: padL, y1: H - padB, x2: W - padR, y2: H - padB, stroke: 'var(--baseline)', 'stroke-width': 1 }));
+  return el('div', { class: 'chart-wrap' }, svg);
+}
+
+function groupCompareChart(payload, valName, groupName) {
+  const vIdx = payload.columns.indexOf(valName);
+  const gIdx = payload.columns.indexOf(groupName);
+  const map = new Map();
+  for (const r of payload.rows) {
+    const g = r[gIdx]; const v = Number(r[vIdx]);
+    if (g == null || !Number.isFinite(v)) continue;
+    const k = String(g);
+    if (!map.has(k)) map.set(k, []);
+    map.get(k).push(v);
+  }
+  const groups = [...map.entries()].map(([name, vs]) => ({ name, mean: vs.reduce((s, x) => s + x, 0) / vs.length, n: vs.length }))
+    .sort((a, b) => b.mean - a.mean).slice(0, 20);
+  if (groups.length < 2) return null;
+  const W = 760, rowH = 26, gap = 6, labelW = 140, padT = 10;
+  const H = groups.length * (rowH + gap) + padT + 20;
+  const plotW = W - labelW - 70;
+  const maxV = Math.max(...groups.map((g) => g.mean));
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img' });
+  groups.forEach((g, i) => {
+    const y = padT + i * (rowH + gap);
+    const bw = Math.max(2, (g.mean / (maxV || 1)) * plotW);
+    svg.append(svgEl('text', { x: labelW - 8, y: y + rowH / 2 + 4, 'text-anchor': 'end', fill: 'var(--ink-2)', 'font-size': 12 }, g.name.length > 18 ? g.name.slice(0, 17) + '…' : g.name));
+    const bar = svgEl('rect', { x: labelW, y: y + 3, width: bw, height: rowH - 6, rx: 4, fill: 'var(--series-1)' });
+    bar.addEventListener('mousemove', (e) => showTooltip(e, `${g.name} (n=${g.n})`, `mean ${fmtNum(g.mean)}`));
+    bar.addEventListener('mouseleave', hideTooltip);
+    svg.append(bar);
+    svg.append(svgEl('text', { x: labelW + bw + 6, y: y + rowH / 2 + 4, fill: 'var(--ink-2)', 'font-size': 11.5 }, fmtAxis(g.mean)));
+  });
+  return el('div', { class: 'chart-wrap' }, svg);
+}
+
+function heatmapChart(result) {
+  const { names, matrix } = result;
+  if (!names || !matrix) return null;
+  const k = names.length;
+  const cell = Math.min(48, Math.floor(560 / k));
+  const labelW = 90;
+  const W = labelW + k * cell + 10, H = labelW + k * cell + 10;
+  const svg = svgEl('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img' });
+  for (let i = 0; i < k; i++) {
+    svg.append(svgEl('text', { x: labelW - 6, y: labelW + i * cell + cell / 2 + 4, 'text-anchor': 'end', fill: 'var(--ink-2)', 'font-size': 11 }, short(names[i])));
+    const t = svgEl('text', { x: labelW + i * cell + cell / 2, y: labelW - 6, 'text-anchor': 'start', fill: 'var(--ink-2)', 'font-size': 11, transform: `rotate(-45 ${labelW + i * cell + cell / 2} ${labelW - 6})` }, short(names[i]));
+    svg.append(t);
+    for (let j = 0; j < k; j++) {
+      const r = matrix[i][j];
+      const rect = svgEl('rect', { x: labelW + j * cell, y: labelW + i * cell, width: cell - 2, height: cell - 2, rx: 3, fill: corrColor(r) });
+      rect.addEventListener('mousemove', (e) => showTooltip(e, `${names[i]} × ${names[j]}`, Number.isFinite(r) ? `r=${fmtNum(r)}` : 'n/a'));
+      rect.addEventListener('mouseleave', hideTooltip);
+      svg.append(rect);
+    }
+  }
+  return el('div', { class: 'chart-wrap' }, svg);
+}
+function short(s) { return s.length > 12 ? s.slice(0, 11) + '…' : s; }
+function corrColor(r) {
+  if (!Number.isFinite(r)) return 'var(--surface-3)';
+  // blue (neg) ↔ neutral ↔ yellow (pos)
+  const a = Math.min(1, Math.abs(r));
+  return r >= 0
+    ? `color-mix(in srgb, var(--series-3) ${Math.round(a * 100)}%, var(--surface))`
+    : `color-mix(in srgb, var(--series-1) ${Math.round(a * 100)}%, var(--surface))`;
+}
+
 /* ---------------- the ask flow ---------------- */
 
 async function ask(question) {
@@ -620,7 +922,7 @@ async function ask(question) {
 
   let gotResult = false;
   try {
-    await sseStream('/ask', { question, history: state.history.slice(-6) }, (ev) => {
+    await sseStream('/ask', { question, history: state.history.slice(-6), connectionId: state.activeConnectionId }, (ev) => {
       switch (ev.type) {
         case 'status':
           cardCtl.setStatus(ev.message);
@@ -629,7 +931,7 @@ async function ask(question) {
           cardCtl.appendThinking(ev.text);
           break;
         case 'schema_ready':
-          api('/schema').then((r) => { if (r.ok) { state.schema = r.schema; renderSchemaTree(); renderConnStatus(); } });
+          api(`/schema?connectionId=${state.activeConnectionId || ''}`).then((r) => { if (r.ok) { state.schema = r.schema; renderSchemaTree(); renderConnections(); } });
           break;
         case 'retry':
           cardCtl.body.append(el('div', { class: 'notice' }, `Attempt ${ev.attempt} didn't work (${ev.reason}) — trying again…`));
@@ -649,7 +951,7 @@ async function ask(question) {
           cardCtl.body.append(block, row);
           runBtn.addEventListener('click', async () => {
             runBtn.disabled = true; runBtn.textContent = 'Running…';
-            const res = await api('/run', { sql: ev.sql });
+            const res = await api('/run', { sql: ev.sql, connectionId: state.activeConnectionId });
             block.remove(); row.remove();
             if (res.ok) {
               renderResult(cardCtl, res, question);
@@ -719,8 +1021,10 @@ const settingsModal = $('#settingsModal');
 
 const DB_DEFAULT_PORTS = { mysql: 3306, postgres: 5432 };
 
-function fillSetupForm() {
-  const db = state.config?.db || {};
+// Open the setup modal to add a new connection (connId=null) or edit one.
+function openConnectionEditor(connId) {
+  state.editingConnId = connId || null;
+  const db = connId ? (state.connections.find((c) => c.id === connId) || {}) : {};
   const llm = state.config?.llm || {};
   $('#dbType').value = db.type || 'mysql';
   $('#dbHost').value = db.host || 'localhost';
@@ -733,9 +1037,16 @@ function fillSetupForm() {
   $('#dbSsl').checked = Boolean(db.ssl);
   $('#dbSslInsecure').checked = Boolean(db.sslInsecure);
   $('#llmUrl').value = llm.baseUrl || 'http://localhost:1234/v1';
+  $('#saveSetupBtn').textContent = connId ? 'Save' : 'Save & connect';
+  $('#removeConnBtn').hidden = !connId;
+  $('#testDbResult').textContent = '';
   toggleDbFields();
   populateModelSelect($('#llmModel'), [], llm.model);
+  populateModelSelect($('#llmEmbedModel'), [], llm.embeddingModel, { allowNone: true });
+  setupModal.showModal();
+  refreshModelsInto($('#llmModel'), $('#llmEmbedModel'), $('#llmUrl').value.trim());
 }
+function fillSetupForm() { openConnectionEditor(null); }
 
 function toggleDbFields() {
   const isSqlite = $('#dbType').value === 'sqlite';
@@ -769,20 +1080,28 @@ function collectDbForm() {
   };
 }
 
-function populateModelSelect(select, models, current) {
+function populateModelSelect(select, models, current, { allowNone = false, noneLabel = '— none —' } = {}) {
   select.textContent = '';
+  if (allowNone) select.append(el('option', { value: '' }, noneLabel));
   const all = [...new Set([...(models || []), ...(current ? [current] : [])])];
-  if (!all.length) select.append(el('option', { value: '' }, '— click ↻ to list models —'));
+  if (!all.length && !allowNone) select.append(el('option', { value: '' }, '— click ↻ to list models —'));
   for (const m of all) select.append(el('option', { value: m }, m));
-  if (current) select.value = current;
+  select.value = current || '';
 }
 
-async function refreshModelsInto(select, urlOverride) {
+// Fetch models and populate a chat select and (optionally) an embedding select.
+async function refreshModelsInto(chatSelect, embedSelect, urlOverride) {
   const res = await api('/test-llm', { llm: urlOverride ? { baseUrl: urlOverride } : {} });
   const resultEl = $('#testLlmResult');
   if (res.ok) {
-    populateModelSelect(select, res.models, select.value || state.config?.llm?.model);
-    if (resultEl) { resultEl.textContent = `✓ found ${res.models.length} model${res.models.length === 1 ? '' : 's'}`; resultEl.className = 'test-result ok'; }
+    const models = res.models && res.models.chat ? res.models : { chat: res.models || [], embedding: [] };
+    state.lastModels = models;
+    if (chatSelect) populateModelSelect(chatSelect, models.chat, chatSelect.value || state.config?.llm?.model);
+    if (embedSelect) populateModelSelect(embedSelect, models.embedding, embedSelect.value || state.config?.llm?.embeddingModel, { allowNone: true });
+    if (resultEl) {
+      resultEl.textContent = `✓ ${models.chat.length} chat model${models.chat.length === 1 ? '' : 's'}` + (models.embedding.length ? `, ${models.embedding.length} embedding` : '');
+      resultEl.className = 'test-result ok';
+    }
   } else if (resultEl) {
     resultEl.textContent = res.error;
     resultEl.className = 'test-result err';
@@ -790,15 +1109,31 @@ async function refreshModelsInto(select, urlOverride) {
   return res.ok;
 }
 
-$('#connectBtn').addEventListener('click', () => { fillSetupForm(); setupModal.showModal(); refreshModelsInto($('#llmModel'), $('#llmUrl').value.trim()); });
+$('#addConnBtn').addEventListener('click', () => openConnectionEditor(null));
+$('#connectBtn').addEventListener('click', () => openConnectionEditor(null));
 $('#cancelSetupBtn').addEventListener('click', () => setupModal.close());
-$('#refreshModelsBtn').addEventListener('click', () => refreshModelsInto($('#llmModel'), $('#llmUrl').value.trim()));
+$('#refreshModelsBtn').addEventListener('click', () => refreshModelsInto($('#llmModel'), $('#llmEmbedModel'), $('#llmUrl').value.trim()));
+$('#removeConnBtn').addEventListener('click', async () => {
+  if (!state.editingConnId) return;
+  await sendJson('DELETE', `/connections/${state.editingConnId}`);
+  const list = await api('/connections');
+  state.connections = list.connections;
+  if (state.activeConnectionId === state.editingConnId) {
+    state.activeConnectionId = state.connections[0]?.id || null;
+    state.schema = null;
+  }
+  state.editingConnId = null;
+  setupModal.close();
+  renderConnections();
+  if (state.activeConnectionId) switchConnection(state.activeConnectionId);
+  else { renderSchemaTree(); }
+});
 
 $('#testDbBtn').addEventListener('click', async () => {
   const out = $('#testDbResult');
   out.textContent = 'Connecting…';
   out.className = 'test-result';
-  const res = await api('/test-db', { db: collectDbForm() });
+  const res = await api('/test-db', { db: collectDbForm(), id: state.editingConnId });
   out.textContent = res.ok ? `✓ ${res.info}` : res.error;
   out.className = `test-result ${res.ok ? 'ok' : 'err'}`;
 });
@@ -806,36 +1141,37 @@ $('#testDbBtn').addEventListener('click', async () => {
 $('#saveSetupBtn').addEventListener('click', async () => {
   const btn = $('#saveSetupBtn');
   btn.disabled = true;
-  btn.textContent = 'Connecting…';
+  const orig = btn.textContent;
+  btn.textContent = 'Saving…';
   try {
-    const saved = await api('/config', {
-      db: collectDbForm(),
-      llm: { baseUrl: $('#llmUrl').value.trim(), model: $('#llmModel').value }
-    });
-    state.config = saved.config;
-    renderConnStatus();
+    const db = collectDbForm();
 
-    const test = await api('/test-db', {});
-    if (!test.ok) {
-      $('#testDbResult').textContent = test.error;
-      $('#testDbResult').className = 'test-result err';
-      return;
-    }
+    // Test the connection details BEFORE creating anything (no orphans).
+    const test = await api('/test-db', { db, id: state.editingConnId });
+    if (!test.ok) { $('#testDbResult').textContent = test.error; $('#testDbResult').className = 'test-result err'; return; }
+
+    // Save the shared LLM settings (base URL + models) alongside the connection.
+    const cfg = await api('/config', {
+      llm: { baseUrl: $('#llmUrl').value.trim(), model: $('#llmModel').value, embeddingModel: $('#llmEmbedModel').value }
+    });
+    state.config = cfg.config;
+
+    const saved = state.editingConnId
+      ? await sendJson('PUT', `/connections/${state.editingConnId}`, { db })
+      : await api('/connections', { db });
+    if (!saved.ok) { $('#testDbResult').textContent = saved.error || 'Save failed'; $('#testDbResult').className = 'test-result err'; return; }
+
+    const list = await api('/connections');
+    state.connections = list.connections;
+    const connId = state.editingConnId || saved.connection.id;
     setupModal.close();
-    $('#connSub').textContent = 'Discovering schema…';
-    const res = await api('/schema/refresh', {});
-    if (res.ok) {
-      state.schema = res.schema;
-      renderSchemaTree();
-      renderConnStatus();
-      loadSuggestions();
-      $('#questionInput').focus();
-    } else {
-      $('#connSub').textContent = res.error || 'Schema discovery failed';
-    }
+    state.editingConnId = null;
+    renderConnections();
+    await switchConnection(connId);
+    $('#questionInput').focus();
   } finally {
     btn.disabled = false;
-    btn.textContent = 'Save & connect';
+    btn.textContent = orig;
   }
 });
 
@@ -844,8 +1180,11 @@ $('#saveSetupBtn').addEventListener('click', async () => {
 function fillSettingsForm() {
   const { llm, guardrails } = state.config;
   populateModelSelect($('#settingsModel'), [], llm.model);
+  populateModelSelect($('#settingsEmbedModel'), [], llm.embeddingModel, { allowNone: true });
   $('#settingsTemperature').value = llm.temperature;
   $('#settingsSchemaMaxChars').value = llm.schemaMaxChars;
+  $('#settingsSelfConsistency').value = llm.selfConsistency || 1;
+  $('#settingsRetrievalMaxTables').value = llm.retrievalMaxTables || 8;
   $('#settingsMaxRows').value = guardrails.maxRows;
   $('#settingsTimeout').value = Math.round(guardrails.timeoutMs / 1000);
   $('#settingsApproval').checked = Boolean(guardrails.approvalMode);
@@ -855,17 +1194,20 @@ function fillSettingsForm() {
 $('#settingsBtn').addEventListener('click', () => {
   fillSettingsForm();
   settingsModal.showModal();
-  refreshModelsInto($('#settingsModel'));
+  refreshModelsInto($('#settingsModel'), $('#settingsEmbedModel'));
 });
 $('#cancelSettingsBtn').addEventListener('click', () => settingsModal.close());
-$('#settingsRefreshModelsBtn').addEventListener('click', () => refreshModelsInto($('#settingsModel')));
+$('#settingsRefreshModelsBtn').addEventListener('click', () => refreshModelsInto($('#settingsModel'), $('#settingsEmbedModel')));
 
 $('#saveSettingsBtn').addEventListener('click', async () => {
   const saved = await api('/config', {
     llm: {
       model: $('#settingsModel').value,
+      embeddingModel: $('#settingsEmbedModel').value,
       temperature: Number($('#settingsTemperature').value) || 0.1,
-      schemaMaxChars: Number($('#settingsSchemaMaxChars').value) || 24000
+      schemaMaxChars: Number($('#settingsSchemaMaxChars').value) || 24000,
+      selfConsistency: Math.max(1, Math.min(5, Number($('#settingsSelfConsistency').value) || 1)),
+      retrievalMaxTables: Math.max(3, Math.min(30, Number($('#settingsRetrievalMaxTables').value) || 8))
     },
     guardrails: {
       maxRows: Math.max(1, Number($('#settingsMaxRows').value) || 500),
@@ -876,7 +1218,67 @@ $('#saveSettingsBtn').addEventListener('click', async () => {
   });
   state.config = saved.config;
   settingsModal.close();
-  renderConnStatus();
+});
+
+/* ---------------- cross-database correlation ---------------- */
+
+const correlateModal = $('#correlateModal');
+
+async function openCorrelate() {
+  const res = await api('/results');
+  const results = res.results || [];
+  if (results.length < 1) {
+    alert('Run at least one query first — correlation joins two result sets you have already produced.');
+    return;
+  }
+  const optionsFor = (sel) => {
+    sel.textContent = '';
+    for (const r of results) sel.append(el('option', { value: r.id }, `${r.label || r.question || r.id} (${r.rowCount} rows)`));
+  };
+  optionsFor($('#corrLeft'));
+  optionsFor($('#corrRight'));
+  if (results.length > 1) $('#corrRight').selectedIndex = 1;
+  const byId = Object.fromEntries(results.map((r) => [r.id, r]));
+  const fillCols = (resultId, keySel, valSel) => {
+    const r = byId[resultId];
+    for (const s of [keySel, valSel]) { s.textContent = ''; (r?.columns || []).forEach((c) => s.append(el('option', { value: c }, c))); }
+    if (r && r.columns.length > 1) valSel.selectedIndex = 1;
+  };
+  const sync = () => {
+    fillCols($('#corrLeft').value, $('#corrLeftKey'), $('#corrLeftValue'));
+    fillCols($('#corrRight').value, $('#corrRightKey'), $('#corrRightValue'));
+  };
+  $('#corrLeft').onchange = sync;
+  $('#corrRight').onchange = sync;
+  sync();
+  $('#corrResult').textContent = '';
+  correlateModal.showModal();
+}
+
+$('#correlateBtn').addEventListener('click', openCorrelate);
+$('#cancelCorrelateBtn').addEventListener('click', () => correlateModal.close());
+$('#runCorrelateBtn').addEventListener('click', async () => {
+  const out = $('#corrResult');
+  out.textContent = 'Joining and correlating…';
+  out.className = 'test-result';
+  const res = await api('/correlate', {
+    leftRef: $('#corrLeft').value, leftKey: $('#corrLeftKey').value, leftValue: $('#corrLeftValue').value,
+    rightRef: $('#corrRight').value, rightKey: $('#corrRightKey').value, rightValue: $('#corrRightValue').value
+  });
+  if (!res.ok) { out.textContent = res.error; out.className = 'test-result err'; return; }
+  correlateModal.close();
+  // render the cross-DB result as an assistant card
+  $('#welcome')?.remove();
+  const leftLabel = $('#corrLeftValue').value;
+  const rightLabel = $('#corrRightValue').value;
+  addUserMessage(`Correlate ${leftLabel} with ${rightLabel} across databases`);
+  const cardCtl = newAssistantCard();
+  cardCtl.clearStatus();
+  cardCtl.body.append(el('div', { class: 'prose' }, `Joined ${res.matched} matching rows across the two databases.`));
+  const slot = el('div', {});
+  cardCtl.body.append(slot);
+  const payload = { question: `relationship between ${leftLabel} and ${rightLabel}`, columns: res.joinResult.columns, rows: res.joinResult.rows, resultId: res.joinResultId };
+  renderStatCard(slot, { ok: true, kind: res.kind, result: res.result, card: res.card, caveats: res.caveats }, payload, { kind: res.kind, columns: { x: 'left_value', y: 'right_value' } });
 });
 
 /* ---------------- boot ---------------- */
@@ -885,26 +1287,26 @@ async function init() {
   applyTheme(localStorage.getItem('askmydb-theme') || 'dark');
   const res = await api('/config');
   state.config = res.config;
+  state.connections = res.connections || [];
+  state.activeConnectionId = res.activeConnectionId || state.connections[0]?.id || null;
+  renderConnections();
 
-  if (!res.dbReady) {
-    renderConnStatus();
+  if (!res.dbReady || !state.connections.length) {
     fillSetupForm();
-    setupModal.showModal();
-    refreshModelsInto($('#llmModel'), $('#llmUrl').value.trim());
     return;
   }
 
-  renderConnStatus();
-  const schemaRes = res.schemaLoaded ? await api('/schema') : await api('/schema/refresh', {});
+  const id = state.activeConnectionId;
+  const schemaRes = await api(`/schema?connectionId=${id}`);
   if (schemaRes.ok) {
     state.schema = schemaRes.schema;
-    renderSchemaTree();
-    loadSuggestions();
   } else {
-    $('#connSub').textContent = schemaRes.error || 'Could not read schema';
-    $('#connDot').className = 'dot err';
+    const refreshed = await api('/schema/refresh', { connectionId: id });
+    if (refreshed.ok) state.schema = refreshed.schema;
   }
-  renderConnStatus();
+  renderSchemaTree();
+  renderConnections();
+  loadSuggestions();
 }
 
 init();

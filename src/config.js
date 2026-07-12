@@ -11,10 +11,17 @@ const DEFAULTS = {
     baseUrl: 'http://localhost:1234/v1', // LM Studio default. Ollama: http://localhost:11434/v1
     apiKey: '',                          // most local servers ignore this; set it if yours requires one
     model: '',                           // picked in the UI from /v1/models
+    embeddingModel: '',                  // optional; enables schema retrieval for large DBs
     temperature: 0.1,
     timeoutMs: 300000,                   // local models can be slow; 5 minutes
-    schemaMaxChars: 24000                // cap on schema text sent to the model (small context windows)
+    schemaMaxChars: 24000,               // cap on schema text sent to the model (small context windows)
+    selfConsistency: 1,                  // sample N SQL candidates and vote (1 = off)
+    retrievalMaxTables: 8                // when retrieving, how many tables to include
   },
+  // Multiple named connections. A legacy single `db` (below) is migrated in
+  // once, tracked by connectionsMigrated so a deleted default isn't recreated.
+  connections: [],
+  connectionsMigrated: false,
   db: {
     type: '',                            // 'mysql' | 'postgres' | 'sqlite'
     host: 'localhost',
@@ -61,11 +68,17 @@ function saveConfig(cfg) {
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
 }
 
-// What the browser is allowed to see: everything except the DB password.
+// What the browser is allowed to see: everything except DB passwords and the
+// LLM API key (which can be a real bearer token for a hosted endpoint).
 function sanitizeConfig(cfg) {
   return {
     ...cfg,
-    db: { ...cfg.db, password: '', hasPassword: Boolean(cfg.db.password) }
+    llm: { ...cfg.llm, apiKey: '', hasApiKey: Boolean(cfg.llm && cfg.llm.apiKey) },
+    db: { ...cfg.db, password: '', hasPassword: Boolean(cfg.db.password) },
+    connections: (cfg.connections || []).map((c) => {
+      const { password, ...rest } = c;
+      return { ...rest, hasPassword: Boolean(password) };
+    })
   };
 }
 

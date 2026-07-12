@@ -11,6 +11,11 @@ No cloud. No API keys. Your data never leaves your machine.
 
 ![askmydb screenshot](docs/screenshot.png)
 
+Ask a question, then hit **📊 Analyze** — askmydb suggests the right statistical test, computes
+it, flags the caveats, and explains the result in plain English:
+
+![askmydb statistical analysis](docs/analysis.png)
+
 ## What it does
 
 - **Schema discovery** — point it at your database and it maps every table, column,
@@ -18,12 +23,39 @@ No cloud. No API keys. Your data never leaves your machine.
   values from text columns (`'TX'`, `'Certified'`, …) so the model writes better WHERE clauses.
 - **Ask in English** — a chat UI turns questions into SQL. Follow-up questions work
   (“now just for California”). If a query fails, the model sees the error and fixes itself.
-- **Results your way** — sortable tables, automatic bar/line charts, CSV export,
-  and an “Explain this result” button for a plain-English summary.
+- **Multiple databases at once** — connect several databases (any mix of MySQL, Postgres,
+  and SQLite) and switch between them. Add them from the sidebar.
+- **Correlate across databases** — you can’t `JOIN` across separate database servers, so
+  askmydb pulls the two result sets into a private local store, joins them on a shared key,
+  and runs the correlation there. Sales in your MySQL vs. spend in your Postgres, joined on
+  region — no data leaves your machine.
+- **Deep statistical analysis** — an “📊 Analyze” button on any result. It **suggests the
+  most relevant analyses and explains why**, then computes them: correlation (Pearson/
+  Spearman), linear & multiple regression, t-tests, ANOVA, chi-square, distributions,
+  outliers, and trends — with confidence intervals, effect sizes, and p-values. Every result
+  carries honest **statistical guardrails** (small-sample warnings, normality checks,
+  multiple-comparison adjustment, and a standing “correlation ≠ causation” caveat).
+- **Results your way** — sortable tables, automatic bar/line charts, scatter/histogram/
+  heatmap charts for analyses, CSV export, and plain-English interpretation of every number.
 - **Read-only guardrails** — multiple independent layers make sure nothing can write to
   your database (details below).
 - **Works with what you have** — MySQL/MariaDB, PostgreSQL, or SQLite. LM Studio, Ollama,
   llama.cpp, vLLM — anything with an OpenAI-compatible API.
+
+### Built for small, local models
+
+Small models are unreliable at arithmetic and easily overwhelmed by a big schema, so askmydb
+is designed around those limits:
+
+- **Numbers are never left to the model.** Every statistic and p-value is computed in
+  JavaScript; deterministic rules decide *which* analysis fits and *why*. The model is used
+  only to narrate the already-computed numbers — so the analysis is correct and reproducible
+  even with a weak 7B model (or with the model server offline).
+- **Schema retrieval** (optional). Point askmydb at an embedding model too (e.g. LM Studio’s
+  `nomic-embed-text`), and on a large database it embeds your tables and includes only the
+  ones relevant to your question — instead of blowing past a small context window.
+- **Self-consistency** (optional). Generate several SQL candidates and cross-check them, in
+  Settings — trades speed for accuracy on tricky questions.
 
 ## Quickstart
 
@@ -55,12 +87,16 @@ That's it — start asking.
 ### No database handy? Try the demo
 
 ```bash
-npm run demo     # creates demo/demo.sqlite with 3,000 sample visa applications
+npm run demo     # creates demo/demo.sqlite (visa applications) + demo/demo2.sqlite (state economics)
 npm start
 ```
 
 Connect with type **SQLite** and the file path the command prints, then ask things like
 *“Which state has the most applications?”* or *“Show me the monthly application trend.”*
+
+The demo creates **two** databases so you can try the cross-database feature: add both, run
+“applications per state” on one and “median income per state” on the other, then click
+**Correlate across databases** and join them on `state`.
 
 ## The guardrails
 

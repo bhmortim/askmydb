@@ -25,14 +25,15 @@
     </div>
 
     <section class="conn-card">
-      <div class="conn-status">
-        <span class="dot" id="connDot"></span>
-        <div class="conn-labels">
-          <div id="connTitle">Not connected</div>
-          <div id="connSub" class="sub">Set up a database to begin</div>
-        </div>
+      <div class="conn-head">
+        <span class="conn-head-label">Databases</span>
+        <button id="addConnBtn" class="icon-btn icon-btn-sm" title="Add a database">
+          <svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
       </div>
-      <button id="connectBtn" class="btn btn-primary btn-block">Connect a database</button>
+      <div id="connList" class="conn-list"></div>
+      <button id="connectBtn" class="btn btn-primary btn-block" hidden>Connect a database</button>
+      <button id="correlateBtn" class="btn btn-block" hidden>⚡ Correlate across databases</button>
     </section>
 
     <section class="schema-section" id="schemaSection" hidden>
@@ -143,11 +144,16 @@
           <button type="button" id="refreshModelsBtn" class="btn" title="List models from the server">↻</button>
         </span>
       </label>
+      <label class="span2">Embedding model <span class="muted-note">(optional — smarter schema focus on big databases)</span>
+        <select id="llmEmbedModel"><option value="">— none —</option></select>
+      </label>
     </div>
     <div class="test-row"><span id="testLlmResult" class="test-result"></span></div>
     <p class="tip">LM Studio: load a model, open the <b>Developer</b> tab and start the server. Ollama users: set the URL to <code>http://localhost:11434/v1</code>.</p>
 
     <div class="modal-actions">
+      <button type="button" class="btn btn-danger" id="removeConnBtn" hidden>Remove</button>
+      <span style="flex:1"></span>
       <button type="button" class="btn" id="cancelSetupBtn">Cancel</button>
       <button type="button" class="btn btn-primary" id="saveSetupBtn">Save &amp; connect</button>
     </div>
@@ -167,11 +173,20 @@
           <button type="button" id="settingsRefreshModelsBtn" class="btn">↻</button>
         </span>
       </label>
+      <label class="span2">Embedding model <span class="muted-note">(optional — schema retrieval for large databases)</span>
+        <select id="settingsEmbedModel"><option value="">— none —</option></select>
+      </label>
       <label>Temperature
         <input id="settingsTemperature" type="number" min="0" max="2" step="0.1">
       </label>
       <label>Schema prompt budget (chars)
         <input id="settingsSchemaMaxChars" type="number" min="2000" step="1000" title="How much schema text to send the model. Lower this if your model has a small context window.">
+      </label>
+      <label>Self-consistency candidates
+        <input id="settingsSelfConsistency" type="number" min="1" max="5" title="Generate this many SQL candidates and cross-check them. Higher = more accurate but slower. 1 = off.">
+      </label>
+      <label>Retrieval: max tables
+        <input id="settingsRetrievalMaxTables" type="number" min="3" max="30" title="When using an embedding model on a large schema, how many relevant tables to focus on.">
       </label>
     </div>
 
@@ -190,6 +205,38 @@
     <div class="modal-actions">
       <button type="button" class="btn" id="cancelSettingsBtn">Cancel</button>
       <button type="button" class="btn btn-primary" id="saveSettingsBtn">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- ============ Correlate across databases modal ============ -->
+<dialog id="correlateModal">
+  <form method="dialog" class="modal-form">
+    <h2>Correlate across databases</h2>
+    <p class="tip" style="margin-top:0">Pick two result sets you've already queried (from any database), a shared key to join them on, and the two numeric columns to correlate. The data is joined locally — nothing is written to your databases.</p>
+
+    <h3>Left result</h3>
+    <div class="field-grid">
+      <label class="span2">Result set
+        <select id="corrLeft"></select>
+      </label>
+      <label>Join key column<select id="corrLeftKey"></select></label>
+      <label>Value column<select id="corrLeftValue"></select></label>
+    </div>
+
+    <h3>Right result</h3>
+    <div class="field-grid">
+      <label class="span2">Result set
+        <select id="corrRight"></select>
+      </label>
+      <label>Join key column<select id="corrRightKey"></select></label>
+      <label>Value column<select id="corrRightValue"></select></label>
+    </div>
+
+    <div class="test-row"><span id="corrResult" class="test-result"></span></div>
+    <div class="modal-actions">
+      <button type="button" class="btn" id="cancelCorrelateBtn">Cancel</button>
+      <button type="button" class="btn btn-primary" id="runCorrelateBtn">Correlate</button>
     </div>
   </form>
 </dialog>

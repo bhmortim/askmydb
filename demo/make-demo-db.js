@@ -122,13 +122,41 @@ const employers = db.prepare('SELECT COUNT(*) AS c FROM employers').get().c;
 const apps = db.prepare('SELECT COUNT(*) AS c FROM visa_applications').get().c;
 db.close();
 
+// A SECOND, separate database of per-state economic indicators, so you can try
+// the cross-database correlation feature (join these two on `state`).
+const OUT2 = path.join(__dirname, 'demo2.sqlite');
+if (fs.existsSync(OUT2)) fs.unlinkSync(OUT2);
+const db2 = new DatabaseSync(OUT2);
+db2.exec(`
+  CREATE TABLE state_economics (
+    state TEXT PRIMARY KEY,
+    median_income INTEGER,
+    cost_of_living_index REAL,
+    unemployment_rate REAL,
+    tech_job_growth_pct REAL
+  );
+`);
+const ECON = [
+  ['AZ', 65000, 102.2, 3.9, 3.0], ['CA', 84000, 149.9, 4.8, 3.2], ['CO', 80000, 105.6, 3.7, 3.5],
+  ['FL', 63000, 102.8, 3.1, 3.0], ['GA', 61000, 91.4, 3.4, 3.3], ['IL', 68000, 94.5, 4.5, 2.4],
+  ['MA', 85000, 135.0, 3.5, 3.1], ['NC', 60000, 95.8, 3.8, 3.6], ['NJ', 85000, 125.1, 4.2, 2.2],
+  ['NY', 74000, 139.1, 4.3, 2.9], ['OH', 58000, 93.0, 4.1, 1.9], ['TX', 67000, 93.9, 4.0, 4.1],
+  ['WA', 82000, 118.7, 4.6, 3.8]
+];
+const insEcon = db2.prepare('INSERT INTO state_economics VALUES (?, ?, ?, ?, ?)');
+for (const r of ECON) insEcon.run(...r);
+db2.close();
+
 console.log('');
-console.log(`  Demo database created: ${OUT}`);
-console.log(`  ${employers} employers, ${apps} visa applications (last 24 months)`);
+console.log(`  Demo database 1 created: ${OUT}`);
+console.log(`    ${employers} employers, ${apps} visa applications (last 24 months)`);
+console.log(`  Demo database 2 created: ${OUT2}`);
+console.log(`    ${ECON.length} states of economic indicators`);
 console.log('');
-console.log('  Next: npm start, then connect with');
-console.log('    Database type: SQLite');
-console.log(`    File path:     ${OUT}`);
+console.log('  Next: npm start, then add BOTH as SQLite connections:');
+console.log(`    ${OUT}`);
+console.log(`    ${OUT2}`);
 console.log('');
-console.log('  Try asking: "Which state has the most applications?"');
+console.log('  Try asking database 1: "Which state has the most applications?"');
+console.log('  Then click "Correlate across databases" to join them on state.');
 console.log('');

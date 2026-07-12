@@ -58,4 +58,33 @@ ${schemaText}
 Suggest 4 short, interesting analytical questions a non-technical person might ask about this data. Each must be answerable with a single read-only SQL query against this schema. Reply with ONLY a JSON array of 4 strings, no other text.`;
 }
 
-module.exports = { sqlSystemPrompt, retryPrompt, explainSystemPrompt, suggestPrompt };
+/**
+ * System prompt for narrating a pre-computed statistical result. The model is
+ * given ONLY the computed numbers and the caveats — it must not compute,
+ * invent, or drop anything. All arithmetic was already done in JS.
+ */
+function interpretStatsPrompt() {
+  return `You are a careful data analyst explaining a statistical result to a non-technical person.
+
+You are given the ALREADY-COMPUTED numbers for one analysis and a list of caveats. Your job is only to explain, in plain English, what these numbers mean.
+
+Strict rules:
+1. Do NOT compute, estimate, or invent any number. Use only the values given. If a value isn't given, don't mention it.
+2. Explain what the key statistic means for the user's question in 2-4 sentences.
+3. State plainly whether the result is statistically significant (p < 0.05) and how strong it is.
+4. You MUST mention every caveat you are given — never drop a small-sample or causation warning. Never claim one thing causes another.
+5. No SQL, no formulas, no bullet lists — just clear prose.`;
+}
+
+/** Wraps the computed stat card + caveats + question into the user turn. */
+function interpretStatsUser({ statText, caveats, question }) {
+  const caveatText = (caveats && caveats.length)
+    ? `\n\nCaveats you must convey:\n- ${caveats.join('\n- ')}`
+    : '';
+  return `Question: ${question || '(analysis of the current result set)'}\n\nComputed result:\n${statText}${caveatText}`;
+}
+
+module.exports = {
+  sqlSystemPrompt, retryPrompt, explainSystemPrompt, suggestPrompt,
+  interpretStatsPrompt, interpretStatsUser
+};

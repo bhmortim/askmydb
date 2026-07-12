@@ -20,9 +20,32 @@ async function listModels(llmCfg) {
   });
   if (!res.ok) throw new Error(`LLM server replied ${res.status} ${res.statusText}`);
   const body = await res.json();
-  return (body.data || [])
-    .map((m) => m.id)
-    .filter((id) => !/embed/i.test(id)); // embedding models can't chat
+  const ids = (body.data || []).map((m) => m.id);
+  return {
+    chat: ids.filter((id) => !/embed/i.test(id)),
+    embedding: ids.filter((id) => /embed/i.test(id))
+  };
+}
+
+/**
+ * Get embedding vectors for an array of texts via the OpenAI-compatible
+ * /embeddings endpoint (LM Studio, Ollama, …). Returns number[][].
+ */
+async function embed(llmCfg, texts, { signal } = {}) {
+  if (!llmCfg.embeddingModel) throw new Error('No embedding model configured');
+  const res = await fetch(`${baseUrl(llmCfg)}/embeddings`, {
+    method: 'POST',
+    headers: headers(llmCfg),
+    body: JSON.stringify({ model: llmCfg.embeddingModel, input: texts }),
+    signal: signal || AbortSignal.timeout(llmCfg.timeoutMs || 120000)
+  });
+  if (!res.ok) {
+    const t = await res.text().catch(() => '');
+    throw new Error(`Embedding server error ${res.status}: ${t.slice(0, 200) || res.statusText}`);
+  }
+  const body = await res.json();
+  // preserve request order
+  return (body.data || []).sort((a, b) => a.index - b.index).map((d) => d.embedding);
 }
 
 /**
@@ -109,4 +132,4 @@ function extractSql(text) {
   return { sql: null, message: t };
 }
 
-module.exports = { listModels, streamChat, extractSql };
+module.exports = { listModels, embed, streamChat, extractSql };
