@@ -10,6 +10,10 @@ function baseUrl(llmCfg) {
 function headers(llmCfg) {
   const h = { 'Content-Type': 'application/json' };
   if (llmCfg.apiKey) h.Authorization = `Bearer ${llmCfg.apiKey}`;
+  // extra headers (e.g. Cloudflare Access service token) for a secured endpoint
+  if (llmCfg.headers && typeof llmCfg.headers === 'object') {
+    for (const [k, v] of Object.entries(llmCfg.headers)) if (v != null && v !== '') h[k] = String(v);
+  }
   return h;
 }
 

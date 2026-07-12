@@ -1,8 +1,12 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
 const express = require('express');
 const { saveConfig, sanitizeConfig, deepMerge } = require('./config');
-const { getAdapter } = require('./db');
+const { getAdapter, sqlDialect } = require('./db');
+const filesAdapter = require('./db/files');
+const { supportedExt } = require('./import/ingest');
 const conns = require('./db/connections');
 const { discoverSchema, schemaToPromptText, dialectName } = require('./schema');
 const { validateSql } = require('./guardrails');
@@ -39,21 +43,64 @@ function createRoutes(config) {
   }
   const asyncRoute = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
+  // CSRF guard: a malicious web page must not be able to drive this localhost
+  // API through the user's browser (e.g. to add a files connection that reads
+  // or deletes local files). Browser fetch/XHR always sends an Origin header;
+  // reject state-changing requests whose Origin isn't this same host. Requests
+  // with no Origin (curl, same-origin navigations) are allowed.
+  router.use((req, res, next) => {
+    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+    const origin = req.headers.origin;
+    if (origin) {
+      let ok = false;
+      try { ok = new URL(origin).host === req.headers.host; } catch { ok = false; }
+      if (!ok) return res.status(403).json({ ok: false, error: 'Cross-origin request blocked' });
+    }
+    next();
+  });
+
   // Resolve the connection to use: explicit id, else active, else first/legacy.
   function resolveConn(id) {
     const wanted = id || session.activeConnectionId;
     return conns.getConnection(config, wanted);
   }
   function connReady(dbCfg) {
-    return Boolean(dbCfg && dbCfg.type && (dbCfg.type === 'sqlite' ? dbCfg.file : dbCfg.database));
+    if (!dbCfg || !dbCfg.type) return false;
+    if (dbCfg.type === 'sqlite') return Boolean(dbCfg.file);
+    if (dbCfg.type === 'files') return Array.isArray(dbCfg.files) && dbCfg.files.length > 0;
+    return Boolean(dbCfg.database);
   }
   function anyReady() {
     return conns.listConnections(config).some((c) => connReady(c)) || connReady(config.db);
   }
 
+  const DATA_DIR = path.join(__dirname, '..', 'data');
+  // Server-managed data-file path, always inside DATA_DIR. The id is
+  // server-generated (see connections.newId), but basename() is belt-and-braces
+  // against any path separators sneaking into it.
+  function filesDataPath(id) { return path.join(DATA_DIR, `${path.basename(String(id))}.sqlite`); }
+  function withinDataDir(p) {
+    const resolved = path.resolve(p);
+    const root = path.resolve(DATA_DIR);
+    return resolved === root || resolved.startsWith(root + path.sep);
+  }
+
+  // For a files connection, ingest the source spreadsheets into a
+  // server-controlled data file. dataFile is ALWAYS derived here — never
+  // trusted from the connection entry — so a request can't point it elsewhere.
+  function buildFilesConnection(connEntry) {
+    connEntry.dataFile = filesDataPath(connEntry.id);
+    const info = filesAdapter.rebuild(connEntry);
+    saveConfig(config);
+    return info;
+  }
+
   // ---- schema discovery + retrieval index (per connection) ----------------
 
   async function refreshSchema(dbCfg) {
+    // A files connection re-ingests its spreadsheets before discovery so edits
+    // to the source files are picked up.
+    if (dbCfg.type === 'files') buildFilesConnection(dbCfg);
     const schema = await discoverSchema(dbCfg, { sampleValues: config.guardrails.sampleValues !== false });
     const { text, truncated } = schemaToPromptText(schema, { maxChars: config.llm.schemaMaxChars });
     const entry = { schema, schemaText: text, truncated, index: null, type: dbCfg.type };
@@ -105,7 +152,7 @@ function createRoutes(config) {
     if (incoming.db) delete incoming.db.hasPassword;
     // Empty apiKey means "keep the saved one" (it was redacted for the browser).
     if (incoming.llm && incoming.llm.apiKey === '' && config.llm.apiKey) delete incoming.llm.apiKey;
-    if (incoming.llm) delete incoming.llm.hasApiKey;
+    if (incoming.llm) { delete incoming.llm.hasApiKey; delete incoming.llm.headerNames; delete incoming.llm.headers; } // headers are file-only
     if (incoming.connections) delete incoming.connections; // managed via /connections
 
     const prevEmbed = config.llm.embeddingModel;
@@ -143,12 +190,36 @@ function createRoutes(config) {
   });
 
   router.delete('/connections/:id', (req, res) => {
+    const conn = conns.getConnection(config, req.params.id);
+    // Clean up a files connection's built database — but only ever unlink inside
+    // our own data dir, never an arbitrary path.
+    if (conn && conn.type === 'files' && conn.dataFile && withinDataDir(conn.dataFile)) {
+      try { fs.unlinkSync(conn.dataFile); } catch { /* gone */ }
+    }
     const removed = conns.removeConnection(config, req.params.id);
     saveConfig(config);
     session.clearSchema(req.params.id);
     if (session.activeConnectionId === req.params.id) session.activeConnectionId = null;
     res.json({ ok: removed });
   });
+
+  // Upload a spreadsheet/CSV from the browser. Body is the raw file bytes
+  // (express.raw is mounted for this path in server.js). Returns the saved
+  // server path, which the client then adds to a files connection.
+  router.post('/upload', asyncRoute(async (req, res) => {
+    const rawName = String(req.query.name || 'upload');
+    const ext = path.extname(rawName).toLowerCase();
+    if (!supportedExt(ext)) return res.json({ ok: false, error: `Unsupported file type "${ext}". Use CSV or Excel.` });
+    if (!Buffer.isBuffer(req.body) || !req.body.length) return res.json({ ok: false, error: 'Empty upload' });
+    const uploadsDir = path.join(DATA_DIR, 'uploads');
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    // sanitize the base name; keep the extension; make it unique
+    const base = path.basename(rawName, ext).replace(/[^A-Za-z0-9_.-]+/g, '_').slice(0, 80) || 'file';
+    const unique = `${base}-${Date.now().toString(36)}${ext}`;
+    const dest = path.join(uploadsDir, unique);
+    fs.writeFileSync(dest, req.body);
+    res.json({ ok: true, path: dest, name: rawName });
+  }));
 
   router.post('/connections/:id/activate', (req, res) => {
     const c = conns.getConnection(config, req.params.id);
@@ -248,7 +319,7 @@ function createRoutes(config) {
         stream.send({ type: 'schema_ready', connectionId: dbCfg.id || 'default' });
       }
 
-      const dialect = dbCfg.type;
+      const dialect = sqlDialect(dbCfg.type);
       const ps = await promptSchema(entry, question, abort.signal);
       if (ps.retrieved) stream.send({ type: 'status', message: `Focusing on ${ps.tables.length} relevant tables…` });
 
@@ -266,7 +337,7 @@ function createRoutes(config) {
       }
       messages.push({ role: 'user', content: question });
 
-      const adapter = getAdapter(dialect);
+      const adapter = getAdapter(dbCfg.type); // execute via the connection's adapter (dialect is only for guardrails/prompt)
       const nCandidates = Math.max(1, Math.min(5, config.llm.selfConsistency || 1));
 
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -340,7 +411,7 @@ function createRoutes(config) {
   router.post('/run', asyncRoute(async (req, res) => {
     const dbCfg = resolveConn(req.body?.connectionId);
     if (!connReady(dbCfg)) return res.status(400).json({ ok: false, error: 'No database configured' });
-    const verdict = validateSql(String(req.body?.sql || ''), { dialect: dbCfg.type, maxRows: config.guardrails.maxRows });
+    const verdict = validateSql(String(req.body?.sql || ''), { dialect: sqlDialect(dbCfg.type), maxRows: config.guardrails.maxRows });
     if (!verdict.ok) return res.json({ ok: false, error: `Blocked by guardrails: ${verdict.reason}` });
     try {
       const result = await getAdapter(dbCfg.type).runQuery(dbCfg, verdict.sql, { timeoutMs: config.guardrails.timeoutMs, maxRows: config.guardrails.maxRows });

@@ -101,6 +101,7 @@
     <div class="field-grid">
       <label class="span2">Database type
         <select id="dbType">
+          <option value="files">Spreadsheets / CSV files</option>
           <option value="mysql">MySQL / MariaDB</option>
           <option value="postgres">PostgreSQL</option>
           <option value="sqlite">SQLite (local file)</option>
@@ -124,6 +125,24 @@
       <label class="span2 db-file" hidden>SQLite file path
         <input id="dbFile" placeholder="C:\data\my-database.sqlite">
       </label>
+      <div class="span2 db-files" hidden>
+        <label style="margin-bottom:8px">Spreadsheets &amp; CSV files</label>
+        <div id="fileDrop" class="file-drop">
+          <input id="fileInput" type="file" accept=".csv,.tsv,.txt,.xlsx,.xls,.xlsm,.ods" multiple hidden>
+          <div class="file-drop-inner">
+            <b>Drag files here</b> or <button type="button" id="browseFilesBtn" class="link-btn">browse</button>
+            <div class="muted-note">CSV or Excel. Each file (and each Excel sheet) becomes a table.</div>
+          </div>
+        </div>
+        <div id="fileList" class="file-list"></div>
+        <details class="path-add">
+          <summary>Add a file already on this computer by path</summary>
+          <div class="path-add-row">
+            <input id="filePathInput" placeholder="C:\Users\you\Downloads\LCA_Disclosure_Q2.xlsx">
+            <button type="button" id="addFilePathBtn" class="btn btn-sm">Add</button>
+          </div>
+        </details>
+      </div>
       <label class="check span2 db-net"><input type="checkbox" id="dbSsl"> Use SSL/TLS</label>
       <label class="check span2 db-net db-ssl" hidden><input type="checkbox" id="dbSslInsecure"> Allow self-signed certificate <span class="warn-text">(skips verification — only for trusted networks)</span></label>
     </div>
@@ -131,7 +150,8 @@
       <button type="button" id="testDbBtn" class="btn">Test connection</button>
       <span id="testDbResult" class="test-result"></span>
     </div>
-    <p class="tip">Tip: connect with a <b>read-only database user</b>. The app enforces read-only anyway, but belts <i>and</i> suspenders. The README shows how to create one.</p>
+    <p class="tip db-net">Tip: connect with a <b>read-only database user</b>. The app enforces read-only anyway, but belts <i>and</i> suspenders. The README shows how to create one.</p>
+    <p class="tip db-files" hidden>Your spreadsheets are read into a local database on <b>this computer</b> and never uploaded anywhere. Re-run “refresh” after editing a file to re-import it.</p>
 
     <h3><span class="step-num">2</span> Your local AI</h3>
     <div class="field-grid">

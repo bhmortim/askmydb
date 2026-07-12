@@ -1,13 +1,18 @@
 # askmydb 🛢️✨
 
-**Chat with your own database, using an AI that runs entirely on your own computer.**
+**Chat with your own data — database *or spreadsheets* — using an AI that runs entirely on
+your own computer.**
 
 Type a question like *“Which companies have the highest approval rate?”* — askmydb sends your
-database schema and the question to a local model (LM Studio, Ollama, or any
-OpenAI-compatible server), the model writes the SQL, askmydb runs it **read-only** against
-your database, and you get back a table, a chart, and a plain-English explanation.
+schema and the question to a local model (LM Studio, Ollama, or any OpenAI-compatible server),
+the model writes the SQL, askmydb runs it **read-only**, and you get back a table, a chart, and
+a plain-English explanation.
 
-No cloud. No API keys. Your data never leaves your machine.
+Don’t have a database? **Just drop in CSV or Excel files** — each becomes a queryable table, so
+you can ask questions across a main spreadsheet and its associated ones without any database
+setup at all.
+
+No cloud. No data uploaded anywhere. It all stays on your machine.
 
 ![askmydb screenshot](docs/screenshot.png)
 
@@ -18,6 +23,11 @@ it, flags the caveats, and explains the result in plain English:
 
 ## What it does
 
+- **Spreadsheets & CSVs, no database needed** — pick “Spreadsheets / CSV files”, drag in your
+  `.csv` / `.xlsx` files (or point at them by path), and each file — and each Excel sheet —
+  becomes a table. Column types are inferred (numbers, currency like `$95,000`, dates), while
+  ZIP codes and case numbers are kept as text so leading zeros aren’t lost. Then ask questions
+  that join across files.
 - **Schema discovery** — point it at your database and it maps every table, column,
   primary key, and foreign-key relationship automatically. It even samples a few example
   values from text columns (`'TX'`, `'Certified'`, …) so the model writes better WHERE clauses.
@@ -67,11 +77,16 @@ is designed around those limits:
 - Or [Ollama](https://ollama.com): `ollama pull qwen2.5-coder` — the server URL is
   `http://localhost:11434/v1`.
 
-**2. Install and start askmydb** (needs [Node.js](https://nodejs.org) 18+, 22+ for the demo)
+**2. Start askmydb**
+
+The easy way (no command line): download this folder, then **double-click `start.bat`**
+(Windows) or **`start.sh`** (Mac/Linux). It installs what it needs the first time and opens
+your browser. You’ll need [Node.js](https://nodejs.org) installed (the launcher links you to it
+if it’s missing). Excel/CSV import and the demo need Node 22+.
+
+Or from a terminal:
 
 ```bash
-git clone https://github.com/bhmortim/askmydb.git
-cd askmydb
 npm install
 npm start
 ```
@@ -80,9 +95,19 @@ Open **http://localhost:3600** — a setup screen appears.
 
 **3. Connect**
 
-Fill in your database details, click **Test connection**, pick your model, then
-**Save & connect**. askmydb discovers your schema and suggests some starter questions.
-That's it — start asking.
+The setup screen opens on **Spreadsheets / CSV files** — drag your files in and you’re ready.
+For a database instead, pick its type, fill in the details, and **Test connection**. Either way,
+pick your model and **Save & connect**. askmydb discovers the tables and suggests starter
+questions. That’s it — start asking.
+
+### Working with spreadsheets & CSVs
+
+Pick **Spreadsheets / CSV files**, drag in one or more `.csv` / `.xlsx` files (or add them by
+path), and Save. Each file becomes a table; each sheet of an Excel workbook becomes its own
+table. Then ask questions across them — e.g. with a main disclosure file plus an associated
+lookup file, *“compare the average wage for employers at office vs apartment addresses”* joins
+the two automatically. Edited a file? Hit the ⟳ refresh to re-import. Your files are read into a
+local database on your machine and never uploaded anywhere.
 
 ### No database handy? Try the demo
 
@@ -141,6 +166,41 @@ Run the guardrail test suite any time with `npm test`.
 Connection details are saved to `config.json` (which is `.gitignore`d — your password
 never ends up in git).
 
+## Giving it to someone else (no setup for them)
+
+askmydb is just a folder. To hand it to a non-technical person:
+
+1. Copy the folder (you can delete `node_modules`, `data/`, and `config.json` first to shrink it).
+2. **Pre-fill their AI settings** so they don’t configure anything: copy
+   [`config.example.json`](config.example.json) to `config.json` and fill in the `baseUrl`,
+   `apiKey`, and `model` (see the next section to share your own AI). They can still add their
+   own database/spreadsheets in the UI.
+3. Send them the folder. They install [Node.js](https://nodejs.org) once, then **double-click
+   `start.bat`** (Windows) or **`start.sh`** (Mac/Linux). A browser opens and they drag in their
+   spreadsheets.
+
+## Sharing your AI over the internet (Cloudflare tunnel)
+
+Have a GPU and want to let a friend use *your* model? You can expose your LM Studio over a
+Cloudflare tunnel — but **don’t point a public tunnel straight at LM Studio**: its server has no
+authentication, so anyone with the URL could use your GPU. askmydb ships a tiny **auth proxy**
+that fixes this.
+
+1. Pick a secret key:
+   `node -e "console.log(require('crypto').randomBytes(24).toString('hex'))"`
+2. Run the proxy (it requires the key and forwards to LM Studio):
+   - Windows: `set ASKMYDB_SHARE_KEY=your-key && npm run share-llm`
+   - Mac/Linux: `ASKMYDB_SHARE_KEY=your-key npm run share-llm`
+3. Point your Cloudflare tunnel at the **proxy** (`http://localhost:1235`), not LM Studio — see
+   [`tools/cloudflared-config.example.yml`](tools/cloudflared-config.example.yml).
+4. Your friend’s config uses **Server URL** `https://your-tunnel-hostname/v1` and **API key** =
+   the secret key. (Put these in their `config.json` per the section above and they’re done.)
+
+For a stronger, key-less option, protect the hostname with **Cloudflare Access** and give a
+service token instead — askmydb sends it via `llm.headers` in `config.json` (example in the
+cloudflared file above). Those header values are treated as secrets: they’re never shown to or
+editable from the browser.
+
 ## Customizing
 
 Everything is plain JavaScript — no build step, no framework. Edit and restart.
@@ -174,6 +234,10 @@ Everything is plain JavaScript — no build step, no framework. Edit and restart
 - **Connecting over SSL** — check "Use SSL/TLS"; the server certificate is verified by default.
   For a self-signed server, also check "Allow self-signed certificate" (only on a trusted network —
   it disables verification).
+- **Importing spreadsheets** — needs Node 22+ (it uses the built-in SQLite). If a number
+  column comes in as text, it probably has stray characters (units, notes); clean the column in
+  the sheet and re-import. Very large Excel files (hundreds of thousands of rows) are read fully
+  into memory — if that’s tight, export the sheet to CSV first, which is lighter.
 
 ## How it works
 

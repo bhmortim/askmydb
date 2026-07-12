@@ -1,0 +1,43 @@
+# Example cloudflared config for exposing your LM Studio to a friend, SECURELY.
+#
+# The tunnel points at the askmydb share-proxy (port 1235), NOT at LM Studio
+# (port 1234) directly — so the endpoint requires the shared key. Never point a
+# public tunnel straight at :1234; that leaves your GPU open to anyone.
+#
+# Setup (one time), assuming you already use cloudflared:
+#   1. Create a tunnel:            cloudflared tunnel create askmydb-llm
+#   2. Route a hostname to it:     cloudflared tunnel route dns askmydb-llm askmydb-llm.yourdomain.com
+#   3. Put this file at:           ~/.cloudflared/config.yml  (or pass with --config)
+#   4. Start the share-proxy:      ASKMYDB_SHARE_KEY=<key> node tools/share-llm.js
+#   5. Run the tunnel:             cloudflared tunnel run askmydb-llm
+#
+# Then your friend's askmydb "Server URL" is  https://askmydb-llm.yourdomain.com/v1
+# and the "API key" is the same <key>.
+
+tunnel: askmydb-llm
+credentials-file: /home/you/.cloudflared/<TUNNEL-ID>.json
+
+ingress:
+  # All traffic for this hostname goes to the local auth proxy.
+  - hostname: askmydb-llm.yourdomain.com
+    service: http://localhost:1235
+  # Everything else is refused.
+  - service: http_status:404
+
+# ---------------------------------------------------------------------------
+# EVEN STRONGER (optional): Cloudflare Access with a service token.
+# Instead of (or in addition to) the shared key, protect the hostname with a
+# Cloudflare Access "service auth" policy and give your friend a service token.
+# Then their config.json carries the token as headers (never a shared bearer):
+#
+#   "llm": {
+#     "baseUrl": "https://askmydb-llm.yourdomain.com/v1",
+#     "headers": {
+#       "CF-Access-Client-Id":     "<client-id>.access",
+#       "CF-Access-Client-Secret": "<client-secret>"
+#     }
+#   }
+#
+# askmydb sends those headers on every request; Cloudflare validates them at the
+# edge before traffic ever reaches your machine.
+# ---------------------------------------------------------------------------

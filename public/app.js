@@ -12,6 +12,7 @@ const state = {
   connections: [],
   activeConnectionId: null,
   editingConnId: null,      // null = adding a new connection
+  pendingFiles: [],         // files being attached to a files-connection
   lastModels: { chat: [], embedding: [] },
   history: [],   // [{question, sql}] for follow-up context
   busy: false
@@ -128,7 +129,7 @@ function renderConnections() {
       dot,
       el('div', { class: 'conn-labels' },
         el('div', { class: 'conn-name', title: c.label }, c.label || c.database || c.file || c.type),
-        el('div', { class: 'conn-type' }, c.type)),
+        el('div', { class: 'conn-type' }, c.type === 'files' ? 'spreadsheets' : c.type)),
       el('button', {
         class: 'icon-btn icon-btn-sm conn-edit', type: 'button', title: 'Edit',
         onclick: (e) => { e.stopPropagation(); openConnectionEditor(c.id); }
@@ -159,9 +160,15 @@ async function switchConnection(id) {
   loadSuggestions();
 }
 
+function connIsReady(conn) {
+  if (!conn || !conn.type) return false;
+  if (conn.type === 'sqlite') return Boolean(conn.file);
+  if (conn.type === 'files') return Array.isArray(conn.files) && conn.files.length > 0;
+  return Boolean(conn.database);
+}
 function updateComposerEnabled() {
   const conn = activeConn();
-  const ready = Boolean(conn && conn.type && (conn.type === 'sqlite' ? conn.file : conn.database));
+  const ready = connIsReady(conn);
   const canAsk = ready && Boolean(state.config?.llm?.model);
   $('#questionInput').disabled = !canAsk;
   $('#sendBtn').disabled = !canAsk || state.busy;
@@ -1026,7 +1033,12 @@ function openConnectionEditor(connId) {
   state.editingConnId = connId || null;
   const db = connId ? (state.connections.find((c) => c.id === connId) || {}) : {};
   const llm = state.config?.llm || {};
-  $('#dbType').value = db.type || 'mysql';
+  // default new connections to files (the easiest on-ramp); load existing files
+  state.pendingFiles = (db.type === 'files' && Array.isArray(db.files))
+    ? db.files.map((p) => ({ path: p, name: p.split(/[\\/]/).pop(), status: 'saved' }))
+    : [];
+  renderFileList();
+  $('#dbType').value = db.type || 'files';
   $('#dbHost').value = db.host || 'localhost';
   $('#dbPort').value = db.port || DB_DEFAULT_PORTS[db.type || 'mysql'] || '';
   $('#dbUser').value = db.user || '';
@@ -1049,15 +1061,16 @@ function openConnectionEditor(connId) {
 function fillSetupForm() { openConnectionEditor(null); }
 
 function toggleDbFields() {
-  const isSqlite = $('#dbType').value === 'sqlite';
-  for (const n of document.querySelectorAll('.db-net')) n.hidden = isSqlite;
+  const type = $('#dbType').value;
+  const isSqlite = type === 'sqlite';
+  const isFiles = type === 'files';
+  const isNet = !isSqlite && !isFiles;
+  for (const n of document.querySelectorAll('.db-net')) n.hidden = !isNet;
   for (const n of document.querySelectorAll('.db-file')) n.hidden = !isSqlite;
+  for (const n of document.querySelectorAll('.db-files')) n.hidden = !isFiles;
   // The "allow self-signed" row only matters once SSL is on.
-  for (const n of document.querySelectorAll('.db-ssl')) n.hidden = isSqlite || !$('#dbSsl').checked;
-  if (!isSqlite) {
-    const placeholder = DB_DEFAULT_PORTS[$('#dbType').value];
-    $('#dbPort').placeholder = placeholder || '';
-  }
+  for (const n of document.querySelectorAll('.db-ssl')) n.hidden = !isNet || !$('#dbSsl').checked;
+  if (isNet) $('#dbPort').placeholder = DB_DEFAULT_PORTS[type] || '';
 }
 $('#dbType').addEventListener('change', () => {
   $('#dbPort').value = DB_DEFAULT_PORTS[$('#dbType').value] || '';
@@ -1067,6 +1080,11 @@ $('#dbSsl').addEventListener('change', toggleDbFields);
 
 function collectDbForm() {
   const type = $('#dbType').value;
+  if (type === 'files') {
+    const files = state.pendingFiles.map((f) => f.path).filter(Boolean);
+    const first = state.pendingFiles[0];
+    return { type: 'files', files, label: files.length > 1 ? `${files.length} files` : (first ? first.name : 'spreadsheets') };
+  }
   return {
     type,
     host: $('#dbHost').value.trim() || 'localhost',
@@ -1079,6 +1097,58 @@ function collectDbForm() {
     sslInsecure: $('#dbSslInsecure').checked
   };
 }
+
+/* ---------------- file import (spreadsheets / CSV) ---------------- */
+
+function renderFileList() {
+  const box = $('#fileList');
+  box.textContent = '';
+  state.pendingFiles.forEach((f, i) => {
+    const item = el('div', { class: 'file-item' },
+      el('span', { class: 'fi-name', title: f.path }, f.name),
+      el('span', { class: 'fi-status' }, f.status || ''),
+      el('button', { class: 'fi-remove', type: 'button', title: 'Remove', onclick: () => { state.pendingFiles.splice(i, 1); renderFileList(); } }, '×'));
+    box.append(item);
+  });
+}
+
+async function uploadFile(file) {
+  const entry = { path: null, name: file.name, status: 'uploading…' };
+  state.pendingFiles.push(entry);
+  renderFileList();
+  try {
+    const res = await fetch(`/api/upload?name=${encodeURIComponent(file.name)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: await file.arrayBuffer()
+    });
+    const data = await res.json();
+    if (data.ok) { entry.path = data.path; entry.status = 'ready'; }
+    else { entry.status = data.error || 'failed'; }
+  } catch (e) {
+    entry.status = 'upload failed';
+  }
+  renderFileList();
+}
+
+function wireFileImport() {
+  const drop = $('#fileDrop');
+  const input = $('#fileInput');
+  $('#browseFilesBtn').addEventListener('click', () => input.click());
+  drop.addEventListener('click', (e) => { if (e.target.id === 'browseFilesBtn') return; input.click(); });
+  input.addEventListener('change', () => { for (const f of input.files) uploadFile(f); input.value = ''; });
+  ['dragover', 'dragenter'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add('dragover'); }));
+  ['dragleave', 'drop'].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.remove('dragover'); }));
+  drop.addEventListener('drop', (e) => { for (const f of e.dataTransfer.files) uploadFile(f); });
+  $('#addFilePathBtn').addEventListener('click', () => {
+    const p = $('#filePathInput').value.trim();
+    if (!p) return;
+    state.pendingFiles.push({ path: p, name: p.split(/[\\/]/).pop(), status: 'on disk' });
+    $('#filePathInput').value = '';
+    renderFileList();
+  });
+}
+wireFileImport();
 
 function populateModelSelect(select, models, current, { allowNone = false, noneLabel = '— none —' } = {}) {
   select.textContent = '';

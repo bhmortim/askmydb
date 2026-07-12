@@ -82,8 +82,10 @@ function removeConnection(config, id) {
   return config.connections.length < before;
 }
 
+// Drop fields the client must never set — id and dataFile are server-managed;
+// letting a request supply them enables path traversal / arbitrary file write.
 function stripMeta(dbCfg) {
-  const { hasPassword, ...rest } = dbCfg || {};
+  const { hasPassword, id, dataFile, builtAt, hasApiKey, headerNames, ...rest } = dbCfg || {};
   return rest;
 }
 

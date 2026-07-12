@@ -12,6 +12,9 @@ const DEFAULTS = {
     apiKey: '',                          // most local servers ignore this; set it if yours requires one
     model: '',                           // picked in the UI from /v1/models
     embeddingModel: '',                  // optional; enables schema retrieval for large DBs
+    headers: {},                         // extra request headers (e.g. Cloudflare Access
+                                         // service token). File-configured only — never
+                                         // shown to or set from the browser.
     temperature: 0.1,
     timeoutMs: 300000,                   // local models can be slow; 5 minutes
     schemaMaxChars: 24000,               // cap on schema text sent to the model (small context windows)
@@ -71,9 +74,15 @@ function saveConfig(cfg) {
 // What the browser is allowed to see: everything except DB passwords and the
 // LLM API key (which can be a real bearer token for a hosted endpoint).
 function sanitizeConfig(cfg) {
+  const hdrs = (cfg.llm && cfg.llm.headers) || {};
   return {
     ...cfg,
-    llm: { ...cfg.llm, apiKey: '', hasApiKey: Boolean(cfg.llm && cfg.llm.apiKey) },
+    llm: {
+      ...cfg.llm,
+      apiKey: '', hasApiKey: Boolean(cfg.llm && cfg.llm.apiKey),
+      // expose only which header keys are set, never their (secret) values
+      headers: {}, headerNames: Object.keys(hdrs)
+    },
     db: { ...cfg.db, password: '', hasPassword: Boolean(cfg.db.password) },
     connections: (cfg.connections || []).map((c) => {
       const { password, ...rest } = c;

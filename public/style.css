@@ -51,6 +51,8 @@
 }
 
 * { box-sizing: border-box; }
+/* the hidden attribute must win over display:flex/grid rules below */
+[hidden] { display: none !important; }
 html, body { height: 100%; }
 body {
   margin: 0;
@@ -501,6 +503,30 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
 .test-result.ok { color: var(--good); }
 .test-result.err { color: var(--bad); }
 .warn-text { color: var(--warn); font-size: 11.5px; }
+
+/* file import */
+.file-drop {
+  border: 1.5px dashed var(--border); border-radius: 10px;
+  padding: 18px; text-align: center; background: var(--bg);
+  cursor: pointer; transition: border-color 0.15s, background 0.15s;
+}
+.file-drop:hover, .file-drop.dragover { border-color: var(--accent); background: var(--accent-soft); }
+.file-drop-inner { font-size: 13px; color: var(--ink-2); }
+.link-btn { background: none; border: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline; padding: 0; }
+.file-list { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; }
+.file-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface-2); font-size: 12.5px;
+}
+.file-item .fi-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-item .fi-status { font-size: 11px; color: var(--ink-3); }
+.file-item .fi-remove { background: none; border: 0; color: var(--ink-3); cursor: pointer; font-size: 15px; line-height: 1; }
+.file-item .fi-remove:hover { color: var(--bad); }
+.path-add { margin-top: 8px; }
+.path-add summary { font-size: 12px; color: var(--ink-3); cursor: pointer; }
+.path-add-row { display: flex; gap: 6px; margin-top: 6px; }
+.path-add-row input { flex: 1; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--ink); font: inherit; font-size: 13px; }
 .tip { font-size: 12.5px; color: var(--ink-3); background: var(--surface-2); border-radius: 8px; padding: 8px 12px; margin: 12px 0 0; }
 .tip code { font-size: 11.5px; }
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 22px; }

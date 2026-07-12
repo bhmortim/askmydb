@@ -8,6 +8,10 @@ const { createRoutes } = require('./src/routes');
 const config = loadConfig();
 const app = express();
 
+// Spreadsheet/CSV uploads arrive as raw bytes on this path — parse them as a
+// Buffer (before express.json, which would otherwise try to JSON-parse them).
+// Larger files should be added by path rather than uploaded through the browser.
+app.use('/api/upload', express.raw({ type: () => true, limit: '100mb' }));
 app.use(express.json({ limit: '4mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 app.use('/api', createRoutes(config));

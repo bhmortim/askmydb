@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "demo": "node demo/make-demo-db.js",
+    "share-llm": "node tools/share-llm.js",
     "test": "node --test"
   },
   "engines": {
@@ -26,6 +27,7 @@
   "dependencies": {
     "express": "^4.21.2",
     "mysql2": "^3.14.0",
-    "pg": "^8.16.0"
+    "pg": "^8.16.0",
+    "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   }
 }

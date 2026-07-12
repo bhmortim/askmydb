@@ -34,6 +34,19 @@ test('add / update / remove connections', () => {
   assert.strictEqual(conns.getConnection(config, added.id), null);
 });
 
+test('client cannot inject a server-managed id or dataFile', () => {
+  const config = baseConfig();
+  const entry = conns.addConnection(config, {
+    type: 'files', files: ['x.csv'],
+    id: '../../evil', dataFile: 'C:/Users/victim/secrets.txt'
+  });
+  // server generates its own id and never accepts a client dataFile
+  assert.notStrictEqual(entry.id, '../../evil');
+  assert.ok(!('dataFile' in entry), 'client dataFile must be stripped');
+  const stored = conns.getConnection(config, entry.id);
+  assert.strictEqual(stored.dataFile, undefined);
+});
+
 test('sanitize strips every connection password', () => {
   const config = baseConfig();
   conns.addConnection(config, { type: 'mysql', database: 'x', password: 'topsecret' });
