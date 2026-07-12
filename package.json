@@ -1,0 +1,31 @@
+{
+  "name": "askmydb",
+  "version": "1.0.0",
+  "description": "Chat with your own database using a local LLM (LM Studio / Ollama / any OpenAI-compatible server). Automatic schema discovery, read-only guardrails, tables and charts.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "demo": "node demo/make-demo-db.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18.17"
+  },
+  "keywords": [
+    "sql",
+    "llm",
+    "lm-studio",
+    "ollama",
+    "text-to-sql",
+    "mysql",
+    "postgres",
+    "sqlite",
+    "local-ai"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2",
+    "mysql2": "^3.14.0",
+    "pg": "^8.16.0"
+  }
+}

@@ -1,0 +1,72 @@
+'use strict';
+
+const fs = require('fs');
+const path = require('path');
+
+const CONFIG_PATH = path.join(__dirname, '..', 'config.json');
+
+const DEFAULTS = {
+  port: 3600,
+  llm: {
+    baseUrl: 'http://localhost:1234/v1', // LM Studio default. Ollama: http://localhost:11434/v1
+    apiKey: '',                          // most local servers ignore this; set it if yours requires one
+    model: '',                           // picked in the UI from /v1/models
+    temperature: 0.1,
+    timeoutMs: 300000,                   // local models can be slow; 5 minutes
+    schemaMaxChars: 24000                // cap on schema text sent to the model (small context windows)
+  },
+  db: {
+    type: '',                            // 'mysql' | 'postgres' | 'sqlite'
+    host: 'localhost',
+    port: 3306,
+    user: '',
+    password: '',
+    database: '',
+    file: '',                            // sqlite only
+    ssl: false,                          // encrypt the connection (mysql/postgres)
+    sslInsecure: false,                  // skip certificate verification (self-signed servers)
+    sslCa: ''                            // optional CA certificate (PEM) to trust
+  },
+  guardrails: {
+    maxRows: 500,        // hard cap on rows returned to the browser
+    timeoutMs: 15000,    // per-query timeout
+    approvalMode: false, // true = show the SQL and wait for you to click Run
+    sampleValues: true   // include example values for text columns in the schema prompt
+  }
+};
+
+function deepMerge(base, extra) {
+  const out = { ...base };
+  for (const [k, v] of Object.entries(extra || {})) {
+    if (v && typeof v === 'object' && !Array.isArray(v) && base[k] && typeof base[k] === 'object') {
+      out[k] = deepMerge(base[k], v);
+    } else if (v !== undefined) {
+      out[k] = v;
+    }
+  }
+  return out;
+}
+
+function loadConfig() {
+  let fileCfg = {};
+  try {
+    fileCfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  } catch (e) {
+    if (e.code !== 'ENOENT') console.warn(`Could not read config.json: ${e.message}`);
+  }
+  return deepMerge(DEFAULTS, fileCfg);
+}
+
+function saveConfig(cfg) {
+  fs.writeFileSync(CONFIG_PATH, JSON.stringify(cfg, null, 2) + '\n', 'utf8');
+}
+
+// What the browser is allowed to see: everything except the DB password.
+function sanitizeConfig(cfg) {
+  return {
+    ...cfg,
+    db: { ...cfg.db, password: '', hasPassword: Boolean(cfg.db.password) }
+  };
+}
+
+module.exports = { loadConfig, saveConfig, sanitizeConfig, deepMerge, DEFAULTS, CONFIG_PATH };
