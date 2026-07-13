@@ -4,3 +4,7 @@ demo/*.sqlite
 data/
 *.log
 .DS_Store
+# live deployment secrets (only the .example / template files are committed)
+deploy/docker/.env
+deploy/docker/creds.json
+deploy/docker/config.yml

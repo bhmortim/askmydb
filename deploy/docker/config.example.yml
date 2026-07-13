@@ -1,0 +1,10 @@
+# cloudflared ingress for the named tunnel. Put the real one next to
+# docker-compose.yml as config.yml, alongside creds.json (the tunnel's
+# credentials file from `cloudflared tunnel create`).
+tunnel: YOUR-TUNNEL-ID
+credentials-file: /etc/cloudflared/creds.json
+
+ingress:
+  - hostname: llm.yourdomain.com
+    service: http://proxy:1235   # the proxy container on this compose network
+  - service: http_status:404

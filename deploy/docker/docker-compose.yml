@@ -1,0 +1,36 @@
+# Resilient deployment of the askmydb LLM share endpoint on a Docker host.
+#
+# Two always-on containers:
+#   proxy       — requires the shared key, forwards to LM Studio on your GPU box
+#   cloudflared — the named tunnel that serves your public hostname
+#
+# The proxy is NOT published to the host or LAN — only cloudflared reaches it on
+# this compose network, so the only way in is the public hostname + key.
+#
+# Setup: copy .env.example to .env and fill it in; put your tunnel's config.yml
+# and creds.json next to this file (see README.md), then: docker compose up -d
+
+services:
+  proxy:
+    image: node:20-alpine
+    container_name: askmydb-share-proxy
+    restart: unless-stopped
+    environment:
+      ASKMYDB_SHARE_KEY: ${ASKMYDB_SHARE_KEY}
+      LMSTUDIO_URL: ${LMSTUDIO_URL}   # e.g. http://192.168.0.2:1234 (your GPU box on the LAN)
+      SHARE_PORT: "1235"
+      SHARE_HOST: 0.0.0.0             # container-internal only (no ports: mapping)
+    volumes:
+      - ./share-llm.js:/app/share-llm.js:ro
+    command: node /app/share-llm.js
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: askmydb-cloudflared
+    restart: unless-stopped
+    command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+    volumes:
+      - ./config.yml:/etc/cloudflared/config.yml:ro
+      - ./creds.json:/etc/cloudflared/creds.json:ro
+    depends_on:
+      - proxy
