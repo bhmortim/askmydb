@@ -13,6 +13,7 @@ const state = {
   activeConnectionId: null,
   editingConnId: null,      // null = adding a new connection
   pendingFiles: [],         // files being attached to a files-connection
+  dataSourcesAvailable: false,
   lastModels: { chat: [], embedding: [] },
   history: [],   // [{question, sql}] for follow-up context
   busy: false
@@ -618,6 +619,20 @@ function renderResult(cardCtl, data, question) {
     const analyzeBtn = el('button', { class: 'btn btn-sm', type: 'button' }, '📊 Analyze');
     analyzeBtn.addEventListener('click', () => analyzeResult(cardCtl, analyzeBtn, { question, columns, rows, resultId: data.resultId }));
     actions.append(analyzeBtn);
+
+    if (state.dataSourcesAvailable) {
+      const dsBtn = el('button', { class: 'btn btn-sm', type: 'button' }, '📚 Data sources');
+      dsBtn.addEventListener('click', () => recommendDataSources(cardCtl, dsBtn, question));
+      actions.append(dsBtn);
+    }
+
+    // A map action appears only when the result has mappable geography.
+    const geo = detectGeo(columns, rows);
+    if (geo) {
+      const mapBtn = el('button', { class: 'btn btn-sm', type: 'button' }, '🗺 Map');
+      mapBtn.addEventListener('click', () => showMap(cardCtl, mapBtn, { columns, rows, geo }));
+      actions.append(mapBtn);
+    }
   }
   body.append(actions);
   scrollChat();
@@ -916,6 +931,53 @@ function corrColor(r) {
   return r >= 0
     ? `color-mix(in srgb, var(--series-3) ${Math.round(a * 100)}%, var(--surface))`
     : `color-mix(in srgb, var(--series-1) ${Math.round(a * 100)}%, var(--surface))`;
+}
+
+/* ---------------- public data source recommendations ---------------- */
+
+async function recommendDataSources(cardCtl, btn, question) {
+  btn.disabled = true;
+  const panel = el('div', { class: 'ds-panel' });
+  const head = el('div', { class: 'ds-head' }, '📚 Public data sources that could strengthen this');
+  const body = el('div', { class: 'ds-list' }, el('div', { class: 'status-line' }, el('span', { class: 'spinner' }), el('span', {}, 'Searching 10,000 public datasets…')));
+  panel.append(head, body);
+  cardCtl.body.append(panel);
+  scrollChat();
+  try {
+    const res = await api('/datasources', { question, topK: 6 });
+    body.textContent = '';
+    if (!res.ok) { body.append(el('div', { class: 'notice' }, res.error)); btn.disabled = false; return; }
+    if (!res.recommendations.length) { body.append(el('div', { class: 'result-meta' }, 'No strongly relevant datasets found.')); btn.disabled = false; return; }
+    for (const s of res.recommendations) body.append(dataSourceCard(s));
+  } catch (e) {
+    body.textContent = '';
+    body.append(el('div', { class: 'error-box' }, e.message));
+  }
+  btn.disabled = false;
+}
+
+// Only allow http(s) links — never javascript:/data: from dataset metadata.
+function safeHref(url) {
+  const u = String(url || '');
+  return /^https?:\/\//i.test(u) ? u : null;
+}
+
+function dataSourceCard(s) {
+  const badges = el('div', { class: 'ds-badges' });
+  if (s.primary_topic) badges.append(el('span', { class: 'ds-badge topic' }, s.primary_topic.replace(/_/g, ' ')));
+  if (s.geo && s.geo !== 'varies') badges.append(el('span', { class: 'ds-badge' }, s.geo));
+  if (s.coverage_start) badges.append(el('span', { class: 'ds-badge' }, `since ${s.coverage_start}`));
+  if (s.tier && s.tier <= 3) badges.append(el('span', { class: 'ds-badge authoritative' }, 'authoritative'));
+
+  const href = safeHref(s.url);
+  const linkAttrs = href ? { href, target: '_blank', rel: 'noopener noreferrer' } : {};
+  const title = el(href ? 'a' : 'span', { class: 'ds-title', ...linkAttrs }, s.name);
+  const pub = el('span', { class: 'ds-pub' }, s.publisher || '');
+  return el('div', { class: 'ds-card' },
+    el('div', { class: 'ds-card-head' }, title, pub),
+    badges,
+    s.why ? el('div', { class: 'ds-why' }, s.why) : null,
+    href ? el('a', { class: 'ds-link', ...linkAttrs }, s.url) : el('span', { class: 'ds-link' }, s.url));
 }
 
 /* ---------------- the ask flow ---------------- */
@@ -1355,6 +1417,7 @@ $('#runCorrelateBtn').addEventListener('click', async () => {
 
 async function init() {
   applyTheme(localStorage.getItem('askmydb-theme') || 'dark');
+  api('/datasources/info').then((r) => { state.dataSourcesAvailable = Boolean(r.available); }).catch(() => {});
   const res = await api('/config');
   state.config = res.config;
   state.connections = res.connections || [];

@@ -21,6 +21,11 @@ it, flags the caveats, and explains the result in plain English:
 
 ![askmydb statistical analysis](docs/analysis.png)
 
+Results with geography get a **🗺 Map** — a state choropleth, or graduated bubbles / a heatmap
+for points and ZIPs, all rendered offline (no map tiles fetched):
+
+![askmydb map view](docs/map.png)
+
 ## What it does
 
 - **Spreadsheets & CSVs, no database needed** — pick “Spreadsheets / CSV files”, drag in your
@@ -45,6 +50,14 @@ it, flags the caveats, and explains the result in plain English:
   outliers, and trends — with confidence intervals, effect sizes, and p-values. Every result
   carries honest **statistical guardrails** (small-sample warnings, normality checks,
   multiple-comparison adjustment, and a standing “correlation ≠ causation” caveat).
+- **Find the right public data** — a built-in recommender over **~10,000 US public datasets**
+  (Census, BLS, USCIS, DOL, CDC, data.gov, state/city portals). Ask a research question or hit
+  “📚 Data sources” on any result and it surfaces the datasets most relevant to your goal — with
+  a direct link and why each one helps. Runs on the same local embedding model; nothing is sent
+  to the cloud.
+- **Maps** — when a result has geography (state, ZIP, or lat/long), a “🗺 Map” button plots it:
+  a **choropleth** colored by value for state data, or **graduated bubbles / a heatmap** for
+  points and ZIPs. Fully offline — no map tiles are fetched, so your data never leaves the machine.
 - **Results your way** — sortable tables, automatic bar/line charts, scatter/histogram/
   heatmap charts for analyses, CSV export, and plain-English interpretation of every number.
 - **Read-only guardrails** — multiple independent layers make sure nothing can write to
@@ -170,14 +183,34 @@ never ends up in git).
 
 askmydb is just a folder. To hand it to a non-technical person:
 
-1. Copy the folder (you can delete `node_modules`, `data/`, and `config.json` first to shrink it).
+1. Copy the folder (you can delete `node_modules` and `config.json` first to shrink it).
+   **Keep `data/datasources/`** if you want them to have the data-source recommender (see below).
 2. **Pre-fill their AI settings** so they don’t configure anything: copy
    [`config.example.json`](config.example.json) to `config.json` and fill in the `baseUrl`,
-   `apiKey`, and `model` (see the next section to share your own AI). They can still add their
-   own database/spreadsheets in the UI.
+   `apiKey`, `model`, and `embeddingModel` (see the next section to share your own AI). They can
+   still add their own database/spreadsheets in the UI.
 3. Send them the folder. They install [Node.js](https://nodejs.org) once, then **double-click
    `start.bat`** (Windows) or **`start.sh`** (Mac/Linux). A browser opens and they drag in their
    spreadsheets.
+
+## The public data source catalog
+
+The “📚 Data sources” recommender ranks ~10,000 US public datasets against a research question.
+It needs a prebuilt **pack** (embeddings + metadata) under `data/datasources/`, plus an
+**embedding model** configured (e.g. LM Studio’s `nomic-embed-text`) — the app embeds the
+question and finds the nearest datasets locally.
+
+To build the pack from the source catalog (a JSONL of dataset descriptions):
+
+```bash
+node tools/build-datasource-pack.js path/to/embedding_corpus_sources.jsonl \
+  --base http://localhost:1234/v1 --model text-embedding-nomic-embed-text-v1.5
+```
+
+It writes `data/datasources/{meta.json, vectors.f32, pack.json}` (~40 MB). Ship that folder
+alongside the app. If it’s absent, the recommender is simply hidden — everything else still works.
+The map assets under `public/geo/` (US state polygons + ZIP centroids) are already bundled, so
+maps work out of the box.
 
 ## Sharing your AI over the internet (Cloudflare tunnel)
 

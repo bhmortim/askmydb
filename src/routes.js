@@ -19,6 +19,7 @@ const { buildInterpretationContext, buildStatCard } = require('./analysis/interp
 const { prepareArgs } = require('./analysis/prepare');
 const { runAnalysis } = require('./stats');
 const { createStore } = require('./analysis/store');
+const datasources = require('./datasources');
 const llm = require('./llm');
 const prompts = require('../prompts');
 
@@ -30,6 +31,9 @@ function createRoutes(config) {
   const router = express.Router();
   const session = createSession();
   conns.migrateLegacy(config);
+  // Warm the data-source pack at startup so the first request doesn't pay the
+  // one-time ~40MB synchronous read on the event loop.
+  setImmediate(() => { try { datasources.loadPack(); } catch { /* absent */ } });
 
   function sse(res) {
     res.setHeader('Content-Type', 'text/event-stream');
@@ -448,6 +452,34 @@ function createRoutes(config) {
   router.get('/results', (req, res) => {
     res.json({ ok: true, results: session.listResults() });
   });
+
+  // ---- public data-source recommender -------------------------------------
+
+  router.get('/datasources/info', (req, res) => {
+    res.json({ ok: true, available: datasources.isAvailable(), info: datasources.packInfo(), topics: datasources.topics().slice(0, 12) });
+  });
+
+  router.post('/datasources', asyncRoute(async (req, res) => {
+    if (!datasources.isAvailable()) {
+      return res.json({ ok: false, error: 'The public-data-source catalog is not installed. Build it with tools/build-datasource-pack.js.' });
+    }
+    const question = String(req.body?.question || '').trim().slice(0, MAX_QUESTION_CHARS);
+    if (!question) return res.json({ ok: false, error: 'Empty question' });
+    if (!config.llm.embeddingModel) {
+      return res.json({ ok: false, error: 'An embedding model is required for data-source search. Set one in Settings.' });
+    }
+    try {
+      const [qvec] = await llm.embed(config.llm, [question]);
+      const recs = datasources.recommend(qvec, {
+        topK: Math.min(24, Math.max(1, Math.floor(Number(req.body?.topK)) || 6)),
+        topic: req.body?.topic || undefined,
+        geo: req.body?.geo || undefined
+      });
+      res.json({ ok: true, recommendations: recs });
+    } catch (e) {
+      res.json({ ok: false, error: `Data-source search failed: ${e.message}` });
+    }
+  }));
 
   // ---- analysis: recommend ------------------------------------------------
 

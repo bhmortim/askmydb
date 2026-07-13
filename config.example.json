@@ -4,7 +4,7 @@
     "baseUrl": "https://askmydb-llm.yourdomain.com/v1",
     "apiKey": "PASTE-THE-SHARED-KEY-HERE",
     "model": "qwen3-coder-30b-a3b-instruct",
-    "embeddingModel": ""
+    "embeddingModel": "text-embedding-nomic-embed-text-v1.5"
   },
   "guardrails": {
     "maxRows": 500,
